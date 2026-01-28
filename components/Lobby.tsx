@@ -46,24 +46,34 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
 
       try {
         const [userRes, configRes] = await Promise.all([
-             fetch(`/api/user?telegram_id=${telegram_id}&username=${username}`),
-             fetch('/api/config')
+             fetch(`/api/user?telegram_id=${telegram_id}&username=${username}`).catch(e => ({ ok: false, status: 500, statusText: e.message, text: () => Promise.resolve(e.message) } as Response)),
+             fetch('/api/config').catch(() => ({ ok: false, json: () => Promise.resolve({}) } as any))
         ]);
 
         if (userRes.ok) {
           const userData = await userRes.json();
           setUser(userData);
         } else {
-          const errText = await userRes.text();
-          let msg = errText;
-          try {
-             const json = JSON.parse(errText);
-             if (json.error) msg = json.error;
-          } catch(e) {}
-          throw new Error(`User API Error (${userRes.status}): ${msg}`);
+          // ================= CRITICAL FIX FOR 404/500 ERRORS =================
+          // If the backend isn't reachable (404) or errors out (500), 
+          // we fallback to "Guest Mode" so the app doesn't crash.
+          console.warn(`User API failed (${userRes.status}), entering Guest Mode.`);
+          
+          setUser({
+            id: 0,
+            telegram_id: telegram_id,
+            username: `${username} (访客)`,
+            points: 2000 // Give guest points to play PvE
+          });
+
+          // Show a subtle warning only if it's NOT a 404 (404 usually means offline/dev environment)
+          if (userRes.status !== 404) {
+             // @ts-ignore
+             if (window.Telegram?.WebApp?.showAlert) window.Telegram.WebApp.showAlert(`连接服务器异常 (${userRes.status})，已启用访客模式。`);
+          }
         }
 
-        if (configRes.ok) {
+        if (configRes && configRes.ok) {
             const configData = await configRes.json();
             setConfig({
                 groupUrl: configData.group_url || DEFAULT_TELEGRAM_GROUP_URL,
@@ -71,8 +81,14 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
             });
         }
       } catch (error: any) {
-        console.error("Failed to fetch initial data:", error);
-        setErrorMsg(error.message || "连接服务器失败");
+        console.error("Critical Init Error:", error);
+        // Absolute fallback if everything explodes
+        setUser({
+            id: 0,
+            telegram_id: telegram_id,
+            username: "离线玩家",
+            points: 1000
+        });
       } finally {
         setLoading(false);
       }
@@ -95,8 +111,10 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
 
   const handleSignIn = async () => {
     if (!user) { safeAlert("正在连接服务器，请稍后..."); return; }
+    // Guest mode check
+    if (user.id === 0) { safeAlert("访客模式无法签到，请确保服务器连接正常。"); return; }
+    
     if (isSigningIn) return;
-
     setIsSigningIn(true);
     
     try {
@@ -127,6 +145,8 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
 
   const handleOpenBuyModal = () => {
     if (!user) { safeAlert("数据加载中，请稍后再试。"); return; }
+    if (user.id === 0) { safeAlert("访客模式无法充值。"); return; }
+    
     // @ts-ignore
     const WebApp = window.Telegram?.WebApp;
     
@@ -181,7 +201,6 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
             
             if (status === 'paid') {
                 try {
-                    // Note: Ideally this should be handled by a webhook on backend for security
                     const creditRes = await fetch('/api/buy_points', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -197,10 +216,13 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
                     WebApp.showAlert("支付成功，但积分更新超时，请稍后刷新。");
                 }
             } else if (status === 'cancelled') {
-                // cancelled by user
+                // User cancelled, do nothing or show toast
             } else if (status === 'failed') {
-                // Fallback: Try to open the link directly if the Mini App API failed
-                WebApp.openTelegramLink(invoiceLink);
+                // FIXED: Explicit alert before trying fallback
+                WebApp.showAlert("Telegram 支付控件调用失败。\n将尝试在浏览器中打开支付链接。");
+                setTimeout(() => {
+                    WebApp.openTelegramLink(invoiceLink);
+                }, 500);
             } else {
                 WebApp.showAlert("支付状态: " + status);
             }
@@ -230,6 +252,7 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
 
   const handlePvPClick = () => {
     if (!user) { safeAlert("请等待数据加载完成..."); return; }
+    if (user.id === 0) { safeAlert("访客模式无法进行多人对战，请检查网络连接。"); return; }
     setShowPvPModal(true);
     setInviteLink(null); 
   };
@@ -305,19 +328,12 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
       );
   }
 
+  // Error view removed in favor of Guest Mode fallback in initUser
   if (errorMsg) {
+      // This part should rarely be reached now due to fallback
       return (
           <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[#f0dbb0] text-[#5c4033] font-sans wood-texture p-6 text-center">
-              <div className="bg-red-100 border-2 border-red-500 text-red-700 p-4 rounded-lg shadow-lg mb-6">
-                  <h3 className="font-bold text-xl mb-2">连接失败</h3>
-                  <p className="text-sm break-all">{errorMsg}</p>
-              </div>
-              <button 
-                  onClick={initUser}
-                  className="bg-[#8B0000] text-[#f0dbb0] px-6 py-3 rounded-lg font-bold shadow-lg active:scale-95 transition"
-              >
-                  重试
-              </button>
+             <p>{errorMsg}</p>
           </div>
       );
   }
@@ -348,7 +364,7 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
         <div className="flex flex-col items-center">
             {/* Level Badge */}
             <div className="bg-[#8B0000] text-[#f0dbb0] text-xs font-bold px-2 py-0.5 rounded-t-lg border-x border-t border-[#d4b483]">
-                Lv.{level} 棋士
+                {user?.id === 0 ? '访客' : `Lv.${level} 棋士`}
             </div>
             
             {/* Points Capsule */}
@@ -425,7 +441,8 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
             {/* PvP Button */}
             <button 
                 onClick={handlePvPClick}
-                className="w-full bg-gradient-to-r from-[#5c4033] to-[#6d4c41] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between hover:scale-105 transition-transform duration-200 border-2 border-[#3e2723]"
+                className={`w-full bg-gradient-to-r from-[#5c4033] to-[#6d4c41] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between hover:scale-105 transition-transform duration-200 border-2 border-[#3e2723] ${user?.id === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                disabled={user?.id === 0}
             >
                 <div className="flex flex-col items-start">
                     <span className="text-2xl font-bold">棋友约战</span>

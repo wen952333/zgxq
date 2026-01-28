@@ -31,12 +31,11 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const [historyStack, setHistoryStack] = useState<BoardState[]>([]); // For Undo
   const [noCaptureSteps, setNoCaptureSteps] = useState(0); // 60 moves rule
 
-  // Prevent double deduction
   const hasDeducted = useRef(false);
 
   // Timer Effect
   useEffect(() => {
-    if (winner || isInitializing || (mode === 'pve' && turn === Color.BLACK)) return;
+    if (winner || isInitializing || (mode === 'pve' && turn === Color.BLACK && isAiThinking)) return; // Pause timer when AI thinks (it takes time)
 
     const timer = setInterval(() => {
         setTimeLeft((prev) => {
@@ -50,7 +49,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [turn, winner, isInitializing, mode]);
+  }, [turn, winner, isInitializing, mode, isAiThinking]);
 
   // Initial Logic: Deduct Points or Join Game
   useEffect(() => {
@@ -70,19 +69,26 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ telegram_id, amount: 30 })
                 });
-                const data = await res.json();
+                
+                // If API fails (e.g. 404/500), we act as if it's offline mode/guest mode
+                // We do NOT block the game start
+                const data = res.ok ? await res.json() : { success: false, error: "Network Error" };
+                
                 if (data.success) {
                     setStatusMessage(`对局开始 (当前积分: ${data.points})`);
-                    setIsInitializing(false);
-                    // Save initial state
-                    setHistoryStack([INITIAL_BOARD.map(row => row.map(p => p ? {...p} : null))]);
                 } else {
-                    alert("无法开始对局: " + (data.error || "积分不足或其他错误"));
-                    onBack();
+                    console.warn("Deduction failed, proceeding anyway (Guest/Offline mode)");
+                    setStatusMessage("对局开始 (离线模式/免扣分)");
                 }
+                
+                setIsInitializing(false);
+                setHistoryStack([INITIAL_BOARD.map(row => row.map(p => p ? {...p} : null))]);
+
             } catch (e) {
-                alert("网络连接失败");
-                onBack();
+                console.warn("Network failed, proceeding offline");
+                setStatusMessage("对局开始 (离线模式)");
+                setIsInitializing(false);
+                setHistoryStack([INITIAL_BOARD.map(row => row.map(p => p ? {...p} : null))]);
             }
         };
         deductPoints();
@@ -127,7 +133,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   }, [mode, invitedGameId, onBack]);
 
   const playSound = (type: 'move' | 'capture') => {
-    // Placeholder
+    // Placeholder for sound
   };
 
   const handleGameEnd = async (winnerColor: Color | 'Draw', reason: string = "") => {
@@ -154,7 +160,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                 setResultMessage(`${reason} ${data.message}`);
             }
         } catch (e) {
-            console.error("Points update failed");
+            console.error("Points update failed, offline mode");
         }
     } else {
         setResultMessage(reason);
@@ -182,9 +188,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   };
 
   const executeMove = useCallback((move: Move) => {
-    // 1. Save History before move (Deep Copy)
     setHistoryStack(prev => {
-        // Limit history size to 20 to prevent memory issues, but enough for undo
         const newHistory = [...prev, board.map(row => row.map(p => p ? {...p} : null))];
         if (newHistory.length > 20) newHistory.shift();
         return newHistory;
@@ -202,16 +206,14 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     setBoard(newBoard);
     setSelectedPos(null);
     setValidMoves([]);
-    setTimeLeft(TURN_TIME_LIMIT); // Reset Timer
+    setTimeLeft(TURN_TIME_LIMIT); 
     
-    // 60-Move Rule (120 half moves without capture)
     if (targetPiece) {
         setNoCaptureSteps(0);
     } else {
         setNoCaptureSteps(prev => prev + 1);
     }
 
-    // Notation
     const pieceName = sourcePiece.type.toUpperCase().slice(0, 2);
     setMoveHistory(prev => [...prev, `${sourcePiece.color === Color.RED ? '🔴' : '⚫'} ${pieceName}: (${move.from.x},${move.from.y})→(${move.to.x},${move.to.y})`]);
     playSound(targetPiece ? 'capture' : 'move');
@@ -225,18 +227,13 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     }
   }, [board, noCaptureSteps]);
 
-  // Undo Functionality
   const handleUndo = () => {
     if (mode !== 'pve' || turn !== Color.RED || winner) return;
     if (historyStack.length < 2) {
         alert("无法悔棋 (开局或记录不足)");
         return;
     }
-
-    // Go back 2 steps (My move + AI move) to get back to my turn
-    // Get state from 2 steps ago
     const prevBoard = historyStack[historyStack.length - 2];
-    
     setBoard(prevBoard);
     setHistoryStack(prev => prev.slice(0, prev.length - 2));
     setMoveHistory(prev => prev.slice(0, prev.length - 2));
@@ -256,14 +253,12 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const handleDraw = () => {
       if (winner) return;
       if (mode === 'pve') {
-          // PvE Logic for Draw
           if (noCaptureSteps > 60) {
               handleGameEnd('Draw', "局势僵持，同意和棋");
           } else {
               alert("Gemini: 只有在 30 回合(60步)无吃子后才能申请和棋。");
           }
       } else {
-          // PvP - placeholder
           alert("对方拒绝了您的求和请求。");
       }
   };
@@ -273,8 +268,8 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     if (mode === 'pve' && turn === Color.BLACK && !winner && !isInitializing) {
       const makeAiMove = async () => {
         setIsAiThinking(true);
-        // Minimum thinking time for realism
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Short delay for UI update
+        await new Promise(resolve => setTimeout(resolve, 100));
         
         try {
           const move = await getGeminiMove(board);
@@ -315,9 +310,9 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
         </button>
         <div className="flex flex-col items-center">
              <h1 className="text-lg font-bold tracking-wider">中国象棋</h1>
-             <span className="text-[10px] opacity-80">Gemini Pro AI</span>
+             <span className="text-[10px] opacity-80">Gemini 3 Pro AI (Lv.9)</span>
         </div>
-        <div className="w-10"></div> {/* Spacer */}
+        <div className="w-10"></div>
       </header>
 
       {/* Game Status & Timer */}
@@ -351,13 +346,16 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                     <span className="font-bold text-black text-sm">{mode === 'pve' ? 'Gemini' : '对方'}</span>
                 </div>
                 {turn === Color.BLACK && !winner && (
-                    <div className="flex items-center space-x-1 mt-1">
+                    <div className="flex flex-col items-center mt-1 min-h-[20px]">
                         {isAiThinking ? (
-                            <>
-                                <div className="w-2 h-2 bg-black rounded-full animate-bounce"></div>
-                                <div className="w-2 h-2 bg-black rounded-full animate-bounce delay-75"></div>
-                                <div className="w-2 h-2 bg-black rounded-full animate-bounce delay-150"></div>
-                            </>
+                            <div className="flex flex-col items-center animate-pulse">
+                                <span className="text-[10px] font-extrabold text-[#8B0000] mb-1">🔥 深度思考中</span>
+                                <div className="flex space-x-1">
+                                    <div className="w-1.5 h-1.5 bg-black rounded-full animate-bounce"></div>
+                                    <div className="w-1.5 h-1.5 bg-black rounded-full animate-bounce delay-75"></div>
+                                    <div className="w-1.5 h-1.5 bg-black rounded-full animate-bounce delay-150"></div>
+                                </div>
+                            </div>
                         ) : (
                             <span className="text-xs font-mono font-bold text-[#5c4033]">⏳ {timeLeft}s</span>
                         )}
@@ -371,7 +369,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
       {winner && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm px-4">
           <div className="bg-[#f0dbb0] p-6 rounded-xl shadow-2xl border-4 border-[#5c4033] text-center w-full max-w-sm animate-bounce-in relative">
-             {/* Result Icon */}
              <div className="absolute -top-10 left-1/2 transform -translate-x-1/2">
                 {winner === Color.RED ? (
                     <div className="text-6xl">🏆</div>
