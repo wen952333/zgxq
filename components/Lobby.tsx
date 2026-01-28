@@ -36,7 +36,6 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
       // @ts-ignore
       const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
       
-      // Fallback for local testing if not in Telegram
       const telegram_id = tgUser?.id?.toString() || "dev_user_123";
       const username = tgUser?.username || "DevPlayer";
 
@@ -50,8 +49,14 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
           const userData = await userRes.json();
           setUser(userData);
         } else {
+          // Robust error parsing
           const errText = await userRes.text();
-          throw new Error(`User API Error: ${userRes.status} ${errText}`);
+          let msg = errText;
+          try {
+             const json = JSON.parse(errText);
+             if (json.error) msg = json.error;
+          } catch(e) {}
+          throw new Error(`User API Error (${userRes.status}): ${msg}`);
         }
 
         if (configRes.ok) {
@@ -73,8 +78,19 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
     initUser();
   }, []);
 
+  // Helper for consistent alerts
+  const safeAlert = (msg: string) => {
+      // @ts-ignore
+      if (window.Telegram?.WebApp?.showAlert) {
+         // @ts-ignore
+         window.Telegram.WebApp.showAlert(msg);
+      } else {
+         alert(msg);
+      }
+  };
+
   const handleSignIn = async () => {
-    if (!user) { alert("正在连接服务器，请稍后..."); return; }
+    if (!user) { safeAlert("正在连接服务器，请稍后..."); return; }
     if (isSigningIn) return;
 
     setIsSigningIn(true);
@@ -88,41 +104,37 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
       const data = await res.json();
       
       if (res.ok) {
-          // @ts-ignore
-          const showAlert = window.Telegram?.WebApp?.showAlert || alert;
-          
           if (data.success) {
             setUser(prev => prev ? { ...prev, points: data.points } : null);
-            showAlert(data.message);
+            safeAlert(data.message);
           } else {
-            showAlert(data.message);
+            safeAlert(data.message);
           }
       } else {
-          alert("签到失败: " + (data.error || "服务端错误"));
+          safeAlert("签到失败: " + (data.error || "服务端错误"));
       }
     } catch (e) {
       console.error(e);
-      alert("网络错误，请检查网络连接");
+      safeAlert("网络错误，请检查网络连接");
     } finally {
       setIsSigningIn(false);
     }
   };
 
   const handleBuyPoints = async () => {
-    if (!user) { alert("数据加载中，请稍后再试。"); return; }
+    if (!user) { safeAlert("数据加载中，请稍后再试。"); return; }
     if (isBuying) return;
     
     // @ts-ignore
     const WebApp = window.Telegram?.WebApp;
     
-    // Check if running in Telegram for Payments
     if (!WebApp?.initData) {
-        alert("环境检测：未在 Telegram 内运行。\n支付功能无法调用。\n(Current Env: Web Browser)");
+        safeAlert("环境检测：未在 Telegram 内运行。\n支付功能无法调用。");
         return;
     }
 
-    const starsToBuy = 50; // Example package: 50 Stars
-    const pointsToGet = starsToBuy * 500; // Updated rate: 1 Star = 500 Points
+    const starsToBuy = 50;
+    const pointsToGet = starsToBuy * 500;
     
     WebApp.showConfirm(`确认购买?\n\n消耗: ${starsToBuy} ⭐ (Stars)\n获得: ${pointsToGet} 积分`, async (ok: boolean) => {
         if (!ok) return;
@@ -130,7 +142,6 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
         setIsBuying(true);
 
         try {
-            // 1. Get Invoice Link from Backend
             const invoiceRes = await fetch('/api/create_invoice', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -140,12 +151,11 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
             const invoiceData = await invoiceRes.json();
             
             if (!invoiceData.success) {
-                WebApp.showAlert("创建订单失败: " + (invoiceData.details || invoiceData.error || "可能是 BOT_TOKEN 未配置"));
+                WebApp.showAlert("创建订单失败: " + (invoiceData.details || invoiceData.error || "BOT_TOKEN 未配置"));
                 setIsBuying(false);
                 return;
             }
 
-            // 2. Open Telegram Native Invoice
             WebApp.openInvoice(invoiceData.invoice_link, async (status: string) => {
                 setIsBuying(false);
                 
@@ -163,18 +173,16 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
                             WebApp.showAlert(`支付成功！\n已到账 ${pointsToGet} 积分`);
                         }
                     } catch (e) {
-                        console.error("Error crediting points", e);
                         WebApp.showAlert("支付成功，但积分更新超时，请稍后刷新。");
                     }
                 } else if (status === 'cancelled') {
-                    // User cancelled
+                    // cancelled
                 } else {
                     WebApp.showAlert("支付状态: " + status);
                 }
             });
 
         } catch (e) {
-            console.error(e);
             WebApp.showAlert("请求支付系统出错");
             setIsBuying(false);
         }
@@ -198,14 +206,14 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
   };
 
   const handlePvPClick = () => {
-    if (!user) { alert("请等待数据加载完成..."); return; }
+    if (!user) { safeAlert("请等待数据加载完成..."); return; }
     setShowPvPModal(true);
     setInviteLink(null); 
   };
 
   const handleStartPvE = () => {
-      if (!user) { alert("请等待数据加载完成..."); return; }
-      if (user.points < 30) { alert("积分不足 30，无法开始对局！请签到或购买积分。"); return; }
+      if (!user) { safeAlert("请等待数据加载完成..."); return; }
+      if (user.points < 30) { safeAlert("积分不足 30，无法开始对局！请签到或购买积分。"); return; }
       onStartGame('pve');
   };
 
@@ -225,10 +233,10 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
             const link = `${config.botAppUrl}?startapp=game_${data.game_id}`;
             setInviteLink(link);
         } else {
-            alert("创建对局失败: " + data.error);
+            safeAlert("创建对局失败: " + data.error);
         }
     } catch (e) {
-        alert("网络错误");
+        safeAlert("网络错误");
     } finally {
         setIsCreatingGame(false);
     }
@@ -236,12 +244,10 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
 
   const startPvP = async (restricted: boolean) => {
     if (!user) return;
-    
     if (user.points < 30) {
-        alert("积分不足 30，无法开始游戏！");
+        safeAlert("积分不足 30，无法开始游戏！");
         return;
     }
-
     const myLevel = calculateLevel(user.points);
     const minLevel = restricted ? Math.max(0, myLevel - 1) : 0;
     await createGameSession(minLevel);
@@ -265,8 +271,6 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
 
   const level = user ? calculateLevel(user.points) : 0;
 
-  // --- RENDERING ---
-
   if (loading) {
       return (
           <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[#f0dbb0] text-[#5c4033] font-sans wood-texture">
@@ -281,7 +285,7 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
           <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[#f0dbb0] text-[#5c4033] font-sans wood-texture p-6 text-center">
               <div className="bg-red-100 border-2 border-red-500 text-red-700 p-4 rounded-lg shadow-lg mb-6">
                   <h3 className="font-bold text-xl mb-2">连接失败</h3>
-                  <p>{errorMsg}</p>
+                  <p className="text-sm break-all">{errorMsg}</p>
               </div>
               <button 
                   onClick={initUser}
