@@ -1,0 +1,5 @@
+{
+  "name": "Gemini 中国象棋",
+  "description": "Telegram 迷你应用版中国象棋，由 Google Gemini AI 驱动的智能对手。",
+  "requestFramePermissions": []
+}
