@@ -1,17 +1,14 @@
-import { GoogleGenAI, Type } from "@google/genai";
-import { BoardState, Color, Move, PieceType, ROWS, COLS, Position } from '../types.ts';
+
+import { BoardState, Color, Move, ROWS, COLS } from '../types.ts';
 import { getValidMoves } from '../utils/gameLogic.ts';
 
 // We calculate all valid moves for the AI side (Black) client-side
 // and send them to the model. The model chooses the best index.
-// This prevents hallucinated invalid moves.
 
 interface ScoredMove {
   index: number;
   reasoning: string;
 }
-
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const boardToString = (board: BoardState): string => {
   let str = "   0 1 2 3 4 5 6 7 8\n";
@@ -29,6 +26,39 @@ const boardToString = (board: BoardState): string => {
     str += "\n";
   }
   return str;
+};
+
+// Generic function to call backend AI endpoints
+const callBackendAI = async (endpoint: string, prompt: string, allMoves: { move: Move }[]): Promise<Move | null> => {
+    try {
+        const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt })
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || "API failed");
+        }
+        
+        const data = await res.json();
+        let text = data.text || "";
+        
+        // Cleanup JSON (remove markdown blocks if model hallucinates them)
+        text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        
+        const json = JSON.parse(text);
+        const index = json.bestMoveIndex;
+
+        if (typeof index === 'number' && index >= 0 && index < allMoves.length) {
+            console.log(`AI (${endpoint}) Reasoning:`, json.reasoning);
+            return allMoves[index].move;
+        }
+    } catch (e) {
+        console.warn(`AI (${endpoint}) call failed:`, e);
+    }
+    return null;
 };
 
 export const getGeminiMove = async (board: BoardState): Promise<Move | null> => {
@@ -69,38 +99,16 @@ export const getGeminiMove = async (board: BoardState): Promise<Move | null> => 
     Return the index of the move from the list above.
   `;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            bestMoveIndex: { type: Type.INTEGER },
-            reasoning: { type: Type.STRING }
-          },
-          required: ["bestMoveIndex"]
-        }
-      }
-    });
+  // 3. Try Gemini (Backend)
+  let move = await callBackendAI('/api/gemini', prompt, allMoves);
+  if (move) return move;
 
-    const json = JSON.parse(response.text || "{}");
-    const index = json.bestMoveIndex;
+  // 4. Fallback: Cloudflare AI (Backend)
+  console.log("Falling back to Cloudflare AI...");
+  move = await callBackendAI('/api/ai_move', prompt, allMoves);
+  if (move) return move;
 
-    if (typeof index === 'number' && index >= 0 && index < allMoves.length) {
-      console.log("Gemini Reasoning:", json.reasoning);
-      return allMoves[index].move;
-    } else {
-        // Fallback: Random legal move if AI fails
-        console.warn("AI returned invalid index, falling back to random.");
-        return allMoves[Math.floor(Math.random() * allMoves.length)].move;
-    }
-
-  } catch (error) {
-    console.error("Gemini API Error:", error);
-    // Fallback logic
-    return allMoves[Math.floor(Math.random() * allMoves.length)].move;
-  }
+  // 5. Final Fallback: Random
+  console.warn("All AI failed, using random move.");
+  return allMoves[Math.floor(Math.random() * allMoves.length)].move;
 };

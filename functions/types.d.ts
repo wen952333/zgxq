@@ -46,6 +46,8 @@ export type PagesFunction<Env = unknown, P extends string = any, Data extends Re
 
 export interface Env {
   DB: D1Database;
+  AI: any; // Cloudflare Workers AI Binding
+  API_KEY?: string; // Gemini API Key
   BOT_TOKEN: string; // Required for Telegram Stars payments
   ADMIN_CHAT_ID: string; // ID of the admin user to receive notifications and run commands
   TELEGRAM_GROUP_URL?: string; // Optional: Configurable Group URL
