@@ -1,3 +1,6 @@
+
+import type { D1Database, PagesFunction } from '../types';
+
 interface Env {
   DB: D1Database;
   BOT_TOKEN: string;
@@ -35,13 +38,13 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
     const chatId = update.message.chat.id.toString();
     const text = update.message.text.trim();
+    // Check strict admin equality
     const isAdmin = chatId === context.env.ADMIN_CHAT_ID;
 
     // 1. General Command: /start (Available to everyone)
-    if (text === '/start') {
-       // The Web App URL (Hosting URL) should be derived or hardcoded if needed.
-       // Ideally, use the Mini App Short Name link or the direct URL.
-       // For the Inline Keyboard Button, we usually use the Direct HTTPS URL of the hosting.
+    // Use startsWith to handle deep links like /start game_123
+    if (text.startsWith('/start')) {
+       // Ideally dynamic, but fallback to your provided URL
        const webAppUrl = "https://zgxq-8a0.pages.dev"; 
 
        await sendMessage(
@@ -58,12 +61,12 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     }
 
     // 2. Admin Logic Guard
-    // If not admin and not /start, ignore
+    // If NOT admin, ignore all other commands
     if (!isAdmin) {
       return new Response("OK");
     }
 
-    // 3. Admin Commands
+    // 3. Admin Commands (Only processed if isAdmin is true)
     if (text === '/users' || text === '/points') {
       // Fetch top 20 users by points
       const result = await context.env.DB.prepare(

@@ -1,3 +1,6 @@
+
+import type { D1Database, PagesFunction } from '../types';
+
 interface Env {
   DB: D1Database;
   BOT_TOKEN: string;

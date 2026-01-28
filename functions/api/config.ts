@@ -1,3 +1,6 @@
+
+import type { PagesFunction } from '../types';
+
 interface Env {
   TELEGRAM_GROUP_URL?: string;
   TELEGRAM_BOT_APP_URL?: string;
