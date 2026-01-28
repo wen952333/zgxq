@@ -10,6 +10,7 @@ interface Props {
 export const Lobby: React.FC<Props> = ({ onStartGame }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [showPvPModal, setShowPvPModal] = useState(false);
   const [isBuying, setIsBuying] = useState(false);
@@ -22,15 +23,16 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
       botAppUrl: DEFAULT_TELEGRAM_BOT_APP_URL
   });
 
-  // Initialize User and Config
-  useEffect(() => {
-    // Tell Telegram app we are ready
-    // @ts-ignore
-    window.Telegram?.WebApp?.ready();
-    // @ts-ignore
-    window.Telegram?.WebApp?.expand();
+  const initUser = async () => {
+      setLoading(true);
+      setErrorMsg(null);
 
-    const initUser = async () => {
+      // Tell Telegram app we are ready
+      // @ts-ignore
+      window.Telegram?.WebApp?.ready();
+      // @ts-ignore
+      window.Telegram?.WebApp?.expand();
+
       // @ts-ignore
       const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
       
@@ -48,7 +50,8 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
           const userData = await userRes.json();
           setUser(userData);
         } else {
-          console.error("Failed to load user");
+          const errText = await userRes.text();
+          throw new Error(`User API Error: ${userRes.status} ${errText}`);
         }
 
         if (configRes.ok) {
@@ -58,18 +61,22 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
                 botAppUrl: configData.bot_app_url || DEFAULT_TELEGRAM_BOT_APP_URL
             });
         }
-      } catch (error) {
+      } catch (error: any) {
         console.error("Failed to fetch initial data:", error);
+        setErrorMsg(error.message || "连接服务器失败");
       } finally {
         setLoading(false);
       }
-    };
+  };
 
+  useEffect(() => {
     initUser();
   }, []);
 
   const handleSignIn = async () => {
-    if (!user || isSigningIn) return;
+    if (!user) { alert("正在连接服务器，请稍后..."); return; }
+    if (isSigningIn) return;
+
     setIsSigningIn(true);
     
     try {
@@ -81,30 +88,28 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
       const data = await res.json();
       
       if (res.ok) {
+          // @ts-ignore
+          const showAlert = window.Telegram?.WebApp?.showAlert || alert;
+          
           if (data.success) {
             setUser(prev => prev ? { ...prev, points: data.points } : null);
-            // @ts-ignore
-            window.Telegram?.WebApp?.showAlert ? window.Telegram.WebApp.showAlert(data.message) : alert(data.message);
+            showAlert(data.message);
           } else {
-            // @ts-ignore
-            window.Telegram?.WebApp?.showAlert ? window.Telegram.WebApp.showAlert(data.message) : alert(data.message);
+            showAlert(data.message);
           }
       } else {
-          alert("签到失败: " + (data.error || "未知错误"));
+          alert("签到失败: " + (data.error || "服务端错误"));
       }
     } catch (e) {
       console.error(e);
-      alert("网络错误，请稍后再试");
+      alert("网络错误，请检查网络连接");
     } finally {
       setIsSigningIn(false);
     }
   };
 
   const handleBuyPoints = async () => {
-    if (!user) {
-        alert("用户信息未加载，请刷新页面。");
-        return;
-    }
+    if (!user) { alert("数据加载中，请稍后再试。"); return; }
     if (isBuying) return;
     
     // @ts-ignore
@@ -112,15 +117,13 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
     
     // Check if running in Telegram for Payments
     if (!WebApp?.initData) {
-        alert("支付功能仅在 Telegram App 内可用。\n\n如果您在开发环境，请检查 WebApp 对象。");
+        alert("环境检测：未在 Telegram 内运行。\n支付功能无法调用。\n(Current Env: Web Browser)");
         return;
     }
 
     const starsToBuy = 50; // Example package: 50 Stars
     const pointsToGet = starsToBuy * 500; // Updated rate: 1 Star = 500 Points
     
-    // Ask for confirmation before generating link
-    // @ts-ignore
     WebApp.showConfirm(`确认购买?\n\n消耗: ${starsToBuy} ⭐ (Stars)\n获得: ${pointsToGet} 积分`, async (ok: boolean) => {
         if (!ok) return;
 
@@ -137,7 +140,7 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
             const invoiceData = await invoiceRes.json();
             
             if (!invoiceData.success) {
-                WebApp.showAlert("创建订单失败: " + (invoiceData.details || invoiceData.error || "服务端未配置 BOT_TOKEN"));
+                WebApp.showAlert("创建订单失败: " + (invoiceData.details || invoiceData.error || "可能是 BOT_TOKEN 未配置"));
                 setIsBuying(false);
                 return;
             }
@@ -147,9 +150,6 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
                 setIsBuying(false);
                 
                 if (status === 'paid') {
-                    // 3. On Success, Credit Points
-                    // Security Note: In production, verify this via Webhook from Telegram!
-                    // Relying on client-side callback is not 100% secure but acceptable for simple MVPs.
                     try {
                         const creditRes = await fetch('/api/buy_points', {
                             method: 'POST',
@@ -164,7 +164,7 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
                         }
                     } catch (e) {
                         console.error("Error crediting points", e);
-                        WebApp.showAlert("支付成功，但积分更新失败，请联系管理员。");
+                        WebApp.showAlert("支付成功，但积分更新超时，请稍后刷新。");
                     }
                 } else if (status === 'cancelled') {
                     // User cancelled
@@ -185,7 +185,6 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
     const url = config.groupUrl;
     // @ts-ignore
     const WebApp = window.Telegram?.WebApp;
-    
     if (WebApp && WebApp.openTelegramLink) {
         WebApp.openTelegramLink(url);
     } else {
@@ -199,8 +198,15 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
   };
 
   const handlePvPClick = () => {
+    if (!user) { alert("请等待数据加载完成..."); return; }
     setShowPvPModal(true);
-    setInviteLink(null); // Reset
+    setInviteLink(null); 
+  };
+
+  const handleStartPvE = () => {
+      if (!user) { alert("请等待数据加载完成..."); return; }
+      if (user.points < 30) { alert("积分不足 30，无法开始对局！请签到或购买积分。"); return; }
+      onStartGame('pve');
   };
 
   const createGameSession = async (minLevel: number) => {
@@ -216,7 +222,6 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
         const data = await res.json();
         
         if (data.success) {
-            // Generate Deep Link using the Dynamic Bot App URL
             const link = `${config.botAppUrl}?startapp=game_${data.game_id}`;
             setInviteLink(link);
         } else {
@@ -239,19 +244,14 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
 
     const myLevel = calculateLevel(user.points);
     const minLevel = restricted ? Math.max(0, myLevel - 1) : 0;
-
-    // Call API to create session and get link
     await createGameSession(minLevel);
   };
 
   const shareInvite = () => {
     if (!inviteLink || !user) return;
-    
     const myLevel = calculateLevel(user.points);
     const isRestricted = inviteLink.includes('restricted'); 
-    
     const text = `♟️ *中国象棋对战邀请*\n\n👤 发起人: ${user.username}\n🏆 等级: Lv.${myLevel}\n${isRestricted ? '🔒 限制: 实力相当' : '⚔️ 限制: 无门槛'}\n\n点击下方链接，直接进入游戏对战 👇`;
-    
     const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(inviteLink)}&text=${encodeURIComponent(text)}`;
     
     // @ts-ignore
@@ -265,6 +265,34 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
 
   const level = user ? calculateLevel(user.points) : 0;
 
+  // --- RENDERING ---
+
+  if (loading) {
+      return (
+          <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[#f0dbb0] text-[#5c4033] font-sans wood-texture">
+              <div className="w-16 h-16 border-4 border-[#8B0000] border-t-transparent rounded-full animate-spin mb-4"></div>
+              <p className="font-bold text-lg animate-pulse">正在连接服务器...</p>
+          </div>
+      );
+  }
+
+  if (errorMsg) {
+      return (
+          <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[#f0dbb0] text-[#5c4033] font-sans wood-texture p-6 text-center">
+              <div className="bg-red-100 border-2 border-red-500 text-red-700 p-4 rounded-lg shadow-lg mb-6">
+                  <h3 className="font-bold text-xl mb-2">连接失败</h3>
+                  <p>{errorMsg}</p>
+              </div>
+              <button 
+                  onClick={initUser}
+                  className="bg-[#8B0000] text-[#f0dbb0] px-6 py-3 rounded-lg font-bold shadow-lg active:scale-95 transition"
+              >
+                  重试
+              </button>
+          </div>
+      );
+  }
+
   return (
     <div className="min-h-screen w-full flex flex-col bg-[#f0dbb0] text-[#4a3b2a] font-sans wood-texture relative">
       
@@ -272,9 +300,8 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
       <div className="w-full p-4 flex justify-between items-start">
         {/* Sign In */}
         <button 
-          className={`flex flex-col items-center space-y-1 transition-transform ${isSigningIn || !user ? 'opacity-70 cursor-not-allowed' : 'active:scale-95'}`}
+          className={`flex flex-col items-center space-y-1 transition-transform ${isSigningIn ? 'opacity-70' : 'active:scale-95'}`}
           onClick={handleSignIn}
-          disabled={isSigningIn || !user}
         >
           <div className="w-10 h-10 bg-[#8B0000] rounded-full flex items-center justify-center text-white shadow-lg border-2 border-[#d4b483]">
             {isSigningIn ? (
@@ -302,15 +329,15 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
                         <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zM9 7.5A.75.75 0 019.75 6.75h4.5a.75.75 0 010 1.5h-4.5A.75.75 0 019 7.5zm0 3.75a.75.75 0 01.75-.75h4.5a.75.75 0 010 1.5h-4.5a.75.75 0 01-.75-.75zM9 15a.75.75 0 01.75-.75h4.5a.75.75 0 010 1.5h-4.5A.75.75 0 019 15z" clipRule="evenodd" />
                     </svg>
                     <span className="text-[#d4b483] font-bold text-sm min-w-[30px] text-center">
-                      {loading || !user ? "..." : user.points}
+                      {user ? user.points : 0}
                     </span>
                 </div>
 
                 {/* Buy Button */}
                 <button 
                     onClick={handleBuyPoints}
-                    disabled={isBuying || !user}
-                    className="bg-[#d4b483] hover:bg-[#c2a372] text-[#5c4033] rounded-full p-1 w-6 h-6 flex items-center justify-center transition-colors disabled:opacity-50"
+                    disabled={isBuying}
+                    className="bg-[#d4b483] hover:bg-[#c2a372] text-[#5c4033] rounded-full p-1 w-6 h-6 flex items-center justify-center transition-colors"
                 >
                     {isBuying ? (
                         <div className="w-3 h-3 border-2 border-[#5c4033] border-t-transparent rounded-full animate-spin"></div>
@@ -352,9 +379,8 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
         <div className="w-full max-w-sm space-y-5">
             {/* PvE Button */}
             <button 
-                onClick={() => onStartGame('pve')}
-                disabled={!user}
-                className="w-full bg-gradient-to-r from-[#8B0000] to-[#a52a2a] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between hover:scale-105 transition-transform duration-200 border-2 border-[#5c4033] disabled:opacity-50 disabled:scale-100"
+                onClick={handleStartPvE}
+                className="w-full bg-gradient-to-r from-[#8B0000] to-[#a52a2a] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between hover:scale-105 transition-transform duration-200 border-2 border-[#5c4033]"
             >
                 <div className="flex flex-col items-start">
                     <span className="text-2xl font-bold">人机对战</span>
@@ -370,8 +396,7 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
             {/* PvP Button */}
             <button 
                 onClick={handlePvPClick}
-                disabled={!user}
-                className="w-full bg-gradient-to-r from-[#5c4033] to-[#6d4c41] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between hover:scale-105 transition-transform duration-200 border-2 border-[#3e2723] disabled:opacity-50 disabled:scale-100"
+                className="w-full bg-gradient-to-r from-[#5c4033] to-[#6d4c41] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between hover:scale-105 transition-transform duration-200 border-2 border-[#3e2723]"
             >
                 <div className="flex flex-col items-start">
                     <span className="text-2xl font-bold">棋友约战</span>

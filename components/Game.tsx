@@ -22,6 +22,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const [moveHistory, setMoveHistory] = useState<string[]>([]);
   const [resultMessage, setResultMessage] = useState<string>("");
   const [statusMessage, setStatusMessage] = useState<string>("");
+  const [isInitializing, setIsInitializing] = useState<boolean>(true);
   
   // Prevent double deduction
   const hasDeducted = useRef(false);
@@ -35,6 +36,9 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     // 1. PvE: Deduct Entry Fee immediately
     if (mode === 'pve' && !hasDeducted.current) {
         hasDeducted.current = true;
+        setIsInitializing(true);
+        setStatusMessage("正在进入对局 (扣除30积分)...");
+
         const deductPoints = async () => {
             try {
                 const res = await fetch('/api/deduct_points', {
@@ -44,9 +48,10 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                 });
                 const data = await res.json();
                 if (data.success) {
-                    setStatusMessage(`对局开始 - 已扣除 30 积分 (当前: ${data.points})`);
+                    setStatusMessage(`对局开始 (当前积分: ${data.points})`);
+                    setIsInitializing(false);
                 } else {
-                    alert("无法开始对局: " + data.error);
+                    alert("无法开始对局: " + (data.error || "积分不足或其他错误"));
                     onBack();
                 }
             } catch (e) {
@@ -55,16 +60,18 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
             }
         };
         deductPoints();
+    } else if (mode === 'pve' && hasDeducted.current) {
+        // Already initialized (e.g. strict mode re-render)
+        setIsInitializing(false);
     }
 
     // 2. PvP: Join Logic
     if (mode === 'pvp' && invitedGameId && !hasDeducted.current) {
-         // Note: For PvP, we might want to handle deduction differently (e.g. at create or join).
-         // For now, let's keep the join logic but acknowledge we are "in".
          hasDeducted.current = true; 
+         setIsInitializing(true);
+         setStatusMessage("正在加入房间...");
          
          const joinGame = async () => {
-             setStatusMessage("正在加入房间...");
              const username = tgUser?.username || "DevJoiner";
 
              try {
@@ -83,7 +90,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                 
                 if (joinData.success) {
                     setStatusMessage(joinData.message || "对局开始！");
-                    // Assuming PvP deduction happens elsewhere or is free for this beta
+                    setIsInitializing(false);
                 } else {
                     alert(joinData.error);
                     onBack();
@@ -105,7 +112,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const handleGameEnd = async (winnerColor: Color) => {
     setWinner(winnerColor);
     
-    // Result for RED (User)
     const result = winnerColor === Color.RED ? 'win' : 'loss';
     
     // @ts-ignore
@@ -113,7 +119,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     const telegram_id = tgUser?.id?.toString() || "dev_user_123";
 
     if (mode === 'pve') {
-        // Only call backend to give REWARD. Deduction happened at start.
         try {
             const res = await fetch('/api/game_result', {
                 method: 'POST',
@@ -133,7 +138,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   };
 
   const handleSelect = (pos: Position) => {
-    if (winner || isAiThinking) return;
+    if (winner || isAiThinking || isInitializing) return;
     if (mode === 'pve' && turn !== Color.RED) return;
 
     const piece = board[pos.y][pos.x];
@@ -178,12 +183,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     }
   }, [board]);
 
-  // Handle manual reset/rematch logic carefully with fees
   const handleRematch = () => {
-      // For PVE, a rematch means a NEW game, so we need to deduct points again.
-      // Easiest way is to unmount/remount or manually trigger logic.
-      // Let's reload the component logic by forcing a "Back" then "Start" effectively, 
-      // OR reset state and set hasDeducted=false to trigger effect.
       setBoard(INITIAL_BOARD);
       setTurn(Color.RED);
       setWinner(null);
@@ -192,24 +192,21 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
       setMoveHistory([]);
       setResultMessage("");
       setStatusMessage("");
-      hasDeducted.current = false; // Trigger deduction again
+      setIsInitializing(true); 
+      hasDeducted.current = false; // Trigger effect again for deduction
   };
 
   // AI Turn
   useEffect(() => {
-    if (mode === 'pve' && turn === Color.BLACK && !winner) {
+    if (mode === 'pve' && turn === Color.BLACK && !winner && !isInitializing) {
       const makeAiMove = async () => {
         setIsAiThinking(true);
-        // await new Promise(resolve => setTimeout(resolve, 500)); 
-        
         try {
           const move = await getGeminiMove(board);
           if (move) {
             executeMove(move);
           } else {
-            // Stalemate or trapped? 
             console.log("AI No Move");
-            // If AI cannot move, Red wins in Xiangqi usually
             handleGameEnd(Color.RED);
           }
         } catch (e) {
@@ -220,7 +217,16 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
       };
       makeAiMove();
     }
-  }, [turn, winner, board, executeMove, mode]);
+  }, [turn, winner, board, executeMove, mode, isInitializing]);
+
+  if (isInitializing) {
+      return (
+          <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[#f0dbb0] text-[#5c4033] font-sans wood-texture z-50">
+             <div className="w-16 h-16 border-4 border-[#8B0000] border-t-transparent rounded-full animate-spin mb-4"></div>
+             <p className="text-xl font-bold animate-pulse">{statusMessage}</p>
+          </div>
+      );
+  }
 
   return (
     <div className="min-h-screen flex flex-col items-center bg-[#f0dbb0] text-[#4a3b2a] font-sans pb-10 wood-texture">
