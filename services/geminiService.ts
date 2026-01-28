@@ -2,7 +2,6 @@
 import { BoardState, Color, Move, ROWS, COLS, PieceType } from '../types.ts';
 import { getValidMoves } from '../utils/gameLogic.ts';
 
-// Helper: Convert Board to FEN string
 const boardToFen = (board: BoardState): string => {
     let fen = "";
     for (let y = 0; y < ROWS; y++) {
@@ -30,17 +29,13 @@ const boardToFen = (board: BoardState): string => {
                 fen += char;
             }
         }
-        if (emptyCount > 0) {
-            fen += emptyCount;
-        }
+        if (emptyCount > 0) fen += emptyCount;
         if (y < ROWS - 1) fen += "/";
     }
-    fen += " b - - 0 1"; 
-    return fen;
+    return fen + " b - - 0 1";
 };
 
-// Helper: Create a visual ASCII representation of the board
-const boardToString = (board: BoardState): string => {
+const boardToVisual = (board: BoardState): string => {
   let str = "   0 1 2 3 4 5 6 7 8\n";
   for (let y = 0; y < ROWS; y++) {
     str += `${y}  `;
@@ -58,21 +53,6 @@ const boardToString = (board: BoardState): string => {
   return str;
 };
 
-// Helper: Explicitly list pieces for better spatial awareness
-const getPieceList = (board: BoardState): string => {
-    let list = "Active Pieces:\n";
-    for (let y = 0; y < ROWS; y++) {
-        for (let x = 0; x < COLS; x++) {
-            const p = board[y][x];
-            if (p) {
-                const color = p.color === Color.RED ? "Red(Opponent)" : "Black(You)";
-                list += `- ${color} ${p.type} at x:${x}, y:${y}\n`;
-            }
-        }
-    }
-    return list;
-};
-
 const callBackendAI = async (endpoint: string, prompt: string, allMoves: { move: Move }[]): Promise<Move | null> => {
     try {
         const res = await fetch(endpoint, {
@@ -88,7 +68,6 @@ const callBackendAI = async (endpoint: string, prompt: string, allMoves: { move:
         
         const data = await res.json();
         let text = data.text || "";
-        // Clean markdown
         text = text.replace(/```json/g, '').replace(/```/g, '').trim();
         
         const jsonStart = text.indexOf('{');
@@ -101,19 +80,18 @@ const callBackendAI = async (endpoint: string, prompt: string, allMoves: { move:
         const index = json.bestMoveIndex;
 
         if (typeof index === 'number' && index >= 0 && index < allMoves.length) {
-            console.log(`AI Reasoning:`, json.reasoning);
+            console.log(`Gemini Reasoning:`, json.reasoning);
             return allMoves[index].move;
         }
     } catch (e) {
-        console.warn(`AI (${endpoint}) call failed:`, e);
+        console.warn(`AI 接口调用失败:`, e);
     }
     return null;
 };
 
 export const getGeminiMove = async (board: BoardState): Promise<Move | null> => {
-  const allMoves: { move: Move, notation: string, capture: boolean }[] = [];
+  const allMoves: { move: Move, notation: string }[] = [];
   
-  // Client-side move generation
   for (let y = 0; y < ROWS; y++) {
     for (let x = 0; x < COLS; x++) {
       const p = board[y][x];
@@ -123,8 +101,7 @@ export const getGeminiMove = async (board: BoardState): Promise<Move | null> => 
           const target = board[to.y][to.x];
           allMoves.push({
             move: { from: { x, y }, to },
-            notation: `Index ${allMoves.length}: ${p.type} (${x},${y}) to (${to.x},${to.y})${target ? ' CAPTURE ' + target.type : ''}`,
-            capture: !!target
+            notation: `Index ${allMoves.length}: ${p.type} (${x},${y}) -> (${to.x},${to.y})${target ? ' 吃 '+target.type : ''}`
           });
         });
       }
@@ -133,80 +110,49 @@ export const getGeminiMove = async (board: BoardState): Promise<Move | null> => 
 
   if (allMoves.length === 0) return null;
 
-  const fen = boardToFen(board);
-  const visualBoard = boardToString(board);
-  const pieceList = getPieceList(board);
-  const movesStr = allMoves.map(m => m.notation).join('\n');
-  
-  // Advanced Prompt for Gemini 3 Pro with Thinking
   const prompt = `
-    Role: You are the world's strongest Xiangqi (Chinese Chess) Grandmaster engine. 
-    You are playing BLACK. Red is the opponent.
+    Role: You are an Elite Xiangqi Grandmaster. You play BLACK.
     
-    Current Board State:
-    FEN: ${fen}
+    Current State (FEN): ${boardToFen(board)}
     
-    Visual Map (0,0 is Top-Left):
-    ${visualBoard}
-    
-    ${pieceList}
+    Visual Representation:
+    ${boardToVisual(board)}
 
-    Valid Candidate Moves for Black:
-    ${movesStr}
+    Legal Moves for Black:
+    ${allMoves.map(m => m.notation).join('\n')}
 
-    TASK:
-    Analyze the position deeply. Simulate future moves.
-    
-    TACTICAL PRIORITIES (Highest to Lowest):
-    1. **CHECKMATE**: Can you checkmate Red immediately? If yes, DO IT.
-    2. **SAVE THE KING**: Is your General in check? You MUST move out of check.
-    3. **TACTICAL GAIN**: Look for:
-       - **Forks**: Attacking two pieces at once.
-       - **Pins**: Pinning a piece against the General or Chariot.
-       - **Discovered Attacks**: Moving a piece to unblock an attack by a Chariot or Cannon.
-    4. **MATERIAL**:
-       - Capture Chariot (Value 9).
-       - Capture Cannon/Horse (Value 4.5).
-       - Do NOT trade a Chariot for a Horse/Cannon unless it leads to checkmate.
-       - Do NOT give up a piece for free (Hanging piece).
-    
-    RESPONSE FORMAT (JSON ONLY):
+    Strategy Guide:
+    1. Checkmate Red immediately if possible.
+    2. Protect the General at all costs.
+    3. Look for tactical opportunities (Fork, Pin, Discovered attack).
+    4. Control the center and the river.
+    5. Value Chariot(9) > Cannon(4.5) > Horse(4).
+
+    Task:
+    Analyze the board and select the absolute best move. 
+    Explain your reasoning briefly then provide the index.
+
+    Output JSON:
     {
-        "reasoning": "Detailed Chain-of-Thought... I analyzed move X, but Red replies with Y... Move Z allows me to control the river...",
-        "bestMoveIndex": <Integer index from the Candidate Moves list>
+      "reasoning": "...",
+      "bestMoveIndex": <integer>
     }
   `;
 
-  // Use gemini endpoint
   const move = await callBackendAI('/api/gemini', prompt, allMoves);
   if (move) return move;
 
-  // Fallback Heuristic if AI fails
-  console.warn("AI failed, using heuristic fallback.");
-  const valueMap: Record<string, number> = { 'general': 10000, 'chariot': 900, 'cannon': 450, 'horse': 400, 'advisor': 200, 'elephant': 200, 'soldier': 100 };
-  let bestMove = allMoves[0].move;
-  let maxScore = -99999;
-
-  for (const m of allMoves) {
-      let score = 0;
-      const target = board[m.move.to.y][m.move.to.x];
-      
-      // Material
-      if (target) score += (valueMap[target.type] || 0);
-
-      // Center control for heavy pieces
-      if ([PieceType.CHARIOT, PieceType.HORSE].includes(board[m.move.from.y][m.move.from.x]!.type)) {
-          if (m.move.to.x >= 3 && m.move.to.x <= 5) score += 20;
-      }
-      
-      // Random noise to prevent loops
-      score += Math.random() * 10;
-
-      if (score > maxScore) {
-          maxScore = score;
-          bestMove = m.move;
-      }
-  }
-
-  return bestMove;
+  // 极简启发式兜底
+  let best = allMoves[0].move;
+  let maxScore = -1;
+  const val: any = { chariot: 10, cannon: 5, horse: 5, advisor: 2, elephant: 2, soldier: 1 };
+  allMoves.forEach(m => {
+    const target = board[m.move.to.y][m.move.to.x];
+    const score = target ? val[target.type] : 0;
+    if (score > maxScore) {
+      maxScore = score;
+      best = m.move;
+    }
+  });
+  return best;
 };
