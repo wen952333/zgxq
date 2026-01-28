@@ -13,35 +13,13 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       return new Response(JSON.stringify({ error: "Missing parameters" }), { status: 400 });
     }
 
+    // Generate a simple unique Game ID (e.g., timestamp + random)
     const game_id = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
     const now = Date.now();
 
-    try {
-      await context.env.DB.prepare(
-        "INSERT INTO games (id, creator_id, min_level, status, created_at) VALUES (?, ?, ?, ?, ?)"
-      ).bind(game_id, telegram_id, min_level || 0, 'waiting', now).run();
-    } catch (e: any) {
-      // Auto-create table if missing
-      if (String(e.message).includes("no such table")) {
-         await context.env.DB.prepare(`
-            CREATE TABLE IF NOT EXISTS games (
-                id TEXT PRIMARY KEY,
-                creator_id TEXT,
-                opponent_id TEXT,
-                min_level INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'waiting',
-                created_at INTEGER
-            )
-         `).run();
-         
-         // Retry
-         await context.env.DB.prepare(
-            "INSERT INTO games (id, creator_id, min_level, status, created_at) VALUES (?, ?, ?, ?, ?)"
-         ).bind(game_id, telegram_id, min_level || 0, 'waiting', now).run();
-      } else {
-        throw e;
-      }
-    }
+    await context.env.DB.prepare(
+      "INSERT INTO games (id, creator_id, min_level, status, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind(game_id, telegram_id, min_level || 0, 'waiting', now).run();
 
     return new Response(JSON.stringify({ success: true, game_id }), {
       headers: { "Content-Type": "application/json" }

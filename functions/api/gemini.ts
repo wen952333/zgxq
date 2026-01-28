@@ -17,7 +17,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
     const ai = new GoogleGenAI({ apiKey });
 
-    // 采用 Gemini 3 Pro 预览版，支持深度推理 (Thinking Process)
+    // 使用 Gemini 3 Pro 以获得顶级的逻辑推理能力
     const response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview', 
       contents: prompt,
@@ -31,7 +31,8 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
           },
           required: ["bestMoveIndex"]
         },
-        // 为模型分配 16k 的思考预算，以便在生成着法前进行多步推演
+        // 核心配置：开启 16384 token 的思维链预算
+        // 这允许模型在输出结果前进行深度博弈搜索
         thinkingConfig: { 
           thinkingBudget: 16384 
         } 
@@ -43,6 +44,6 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     });
 
   } catch (e: any) {
-    return new Response(JSON.stringify({ error: e.message || "AI 对弈服务繁忙，请稍后再试" }), { status: 500 });
+    return new Response(JSON.stringify({ error: e.message || "AI Service Error" }), { status: 500 });
   }
 }

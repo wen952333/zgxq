@@ -7,7 +7,7 @@ interface Env {
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   try {
-    const { telegram_id, result } = await context.request.json() as { telegram_id: string, result: 'win' | 'loss' | 'draw' };
+    const { telegram_id, result } = await context.request.json() as { telegram_id: string, result: 'win' | 'loss' };
 
     if (!telegram_id || !result) {
       return new Response(JSON.stringify({ error: "Missing parameters" }), { status: 400 });
@@ -18,32 +18,25 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       return new Response(JSON.stringify({ error: "User not found" }), { status: 404 });
     }
 
-    // Logic: User has ALREADY paid 30 points to enter.
-    // Win: Refund 30 + Reward 25 = +55
-    // Loss: Refund 0 = +0 (Net -30)
-    // Draw: Refund 30 = +30 (Net 0)
-
     let change = 0;
     let message = "";
 
     if (result === 'win') {
-      change = 55; 
-      message = "胜利！赢取 25 积分 (已返还入场费)";
-    } else if (result === 'draw') {
-      change = 30;
-      message = "和棋，返还入场费";
+      // Win: +30 reward - 5 fee = +25
+      change = 25;
+      message = "胜利！获得 30 积分 (扣除 5 积分房费)";
     } else {
-      change = 0;
-      message = "惜败！(扣除入场费)";
+      // Lose: -30
+      change = -30;
+      message = "惜败！扣除 30 积分";
     }
 
     let newPoints = (user.points || 0) + change;
+    if (newPoints < 0) newPoints = 0;
 
-    if (change > 0) {
-        await context.env.DB.prepare("UPDATE users SET points = ? WHERE telegram_id = ?")
-        .bind(newPoints, telegram_id)
-        .run();
-    }
+    await context.env.DB.prepare("UPDATE users SET points = ? WHERE telegram_id = ?")
+      .bind(newPoints, telegram_id)
+      .run();
 
     return new Response(JSON.stringify({ success: true, points: newPoints, message }), {
       headers: { "Content-Type": "application/json" }
