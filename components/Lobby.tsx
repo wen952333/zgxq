@@ -54,7 +54,6 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
           const userData = await userRes.json();
           setUser(userData);
         } else {
-          // Robust error parsing
           const errText = await userRes.text();
           let msg = errText;
           try {
@@ -194,6 +193,8 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
                 }
             } else if (status === 'cancelled') {
                 // cancelled
+            } else if (status === 'failed') {
+                WebApp.showAlert("支付失败 (Status: failed)。\n可能原因：Telegram 版本过低或网络问题。");
             } else {
                 WebApp.showAlert("支付状态: " + status);
             }

@@ -8,8 +8,7 @@ interface Env {
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   try {
-    const body = await context.request.json() as { telegram_id: string, stars: number };
-    const { telegram_id, stars } = body;
+    const { telegram_id, stars } = await context.request.json() as { telegram_id: string, stars: number };
 
     if (!telegram_id || !stars) {
       return new Response(JSON.stringify({ error: "Missing parameters" }), { status: 400 });
@@ -19,17 +18,21 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       return new Response(JSON.stringify({ error: "Server misconfiguration: BOT_TOKEN missing" }), { status: 500 });
     }
 
-    // Ensure stars is an integer
+    // Ensure integer for Telegram API
     const amount = Math.floor(stars);
     // Updated Rate: 1 Star = 500 Points
     const points = amount * 500;
     
+    // Payload optimization: Keep it extremely short (<128 bytes)
+    // t: telegram_id, s: stars
+    const shortPayload = JSON.stringify({ t: telegram_id, s: amount });
+
     // Call Telegram Bot API to create an invoice link
     // Currency "XTR" is for Telegram Stars
     const payload = {
       title: "购买积分",
-      description: `支付 ${amount} 个星星以获取 ${points} 积分`,
-      payload: JSON.stringify({ telegram_id, stars: amount, points, timestamp: Date.now() }),
+      description: `支付 ${amount} 个星星获取 ${points} 积分`,
+      payload: shortPayload, 
       provider_token: "", // Empty for Telegram Stars
       currency: "XTR",
       prices: [{ label: `${points} 积分`, amount: amount }], // amount is number of stars
