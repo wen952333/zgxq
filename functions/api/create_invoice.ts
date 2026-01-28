@@ -11,34 +11,32 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     const { telegram_id, stars } = await context.request.json() as { telegram_id: string, stars: number };
 
     if (!telegram_id || !stars) {
-      return new Response(JSON.stringify({ error: "Missing parameters" }), { status: 400 });
+      return new Response(JSON.stringify({ error: "参数不完整" }), { status: 400 });
     }
 
     if (!context.env.BOT_TOKEN) {
-      return new Response(JSON.stringify({ error: "Server misconfiguration: BOT_TOKEN missing" }), { status: 500 });
+      return new Response(JSON.stringify({ error: "服务器未配置 BOT_TOKEN，请联系管理员" }), { status: 500 });
     }
 
-    // Ensure integer for Telegram API (Stars must be integer)
-    const amount = Math.floor(stars);
+    // 星星数量必须是正整数
+    const amount = Math.abs(Math.floor(stars));
     if (amount <= 0) {
-        return new Response(JSON.stringify({ error: "Invalid stars amount" }), { status: 400 });
+        return new Response(JSON.stringify({ error: "无效的星星数量" }), { status: 400 });
     }
 
-    // Updated Rate: 1 Star = 500 Points
     const points = amount * 500;
     
-    // Payload optimization: Keep it extremely short (<128 bytes)
-    const shortPayload = JSON.stringify({ t: telegram_id, s: amount });
+    // Telegram payload 限制 128 字节
+    const shortPayload = `stars_${telegram_id}_${Date.now()}`;
 
-    // Call Telegram Bot API to create an invoice link
-    // Currency "XTR" is for Telegram Stars
+    // 构建 Telegram Stars 支付请求
     const payload = {
-      title: "购买积分",
-      description: `支付 ${amount} 个星星获取 ${points} 积分`,
+      title: "游戏积分充值",
+      description: `支付 ${amount} Stars，兑换 ${points} 象棋积分`,
       payload: shortPayload, 
-      provider_token: "", // Strictly empty for Telegram Stars
-      currency: "XTR",
-      prices: [{ label: `${points} 积分`, amount: amount }], // amount is number of stars
+      provider_token: "", // Telegram Stars 必须为空字符串
+      currency: "XTR", // 必须是 XTR 
+      prices: [{ label: "象棋积分", amount: amount }], 
     };
 
     const tgResponse = await fetch(`https://api.telegram.org/bot${context.env.BOT_TOKEN}/createInvoiceLink`, {
@@ -50,8 +48,12 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     const tgData: any = await tgResponse.json();
 
     if (!tgData.ok) {
-      console.error("Telegram API Error:", tgData);
-      return new Response(JSON.stringify({ error: "Failed to create invoice", details: tgData.description }), { status: 500 });
+      console.error("TG API Error:", tgData);
+      return new Response(JSON.stringify({ 
+        error: "调起支付链接失败", 
+        details: tgData.description,
+        code: tgData.error_code 
+      }), { status: 500 });
     }
 
     return new Response(JSON.stringify({ success: true, invoice_link: tgData.result }), {
