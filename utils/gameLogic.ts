@@ -1,4 +1,4 @@
-import { BoardState, Color, PieceType, Position, ROWS, COLS } from '../types';
+import { BoardState, Color, PieceType, Position, ROWS, COLS } from '../types.ts';
 
 const isWithinBounds = (x: number, y: number) => x >= 0 && x < COLS && y >= 0 && y < ROWS;
 

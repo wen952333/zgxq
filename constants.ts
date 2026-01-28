@@ -1,4 +1,4 @@
-import { BoardState, Color, Piece, PieceType, ROWS, COLS } from './types';
+import { BoardState, Color, Piece, PieceType, ROWS, COLS } from './types.ts';
 
 // ================= CONFIGURATION =================
 // 默认配置 (当后端未配置环境变量时生效)

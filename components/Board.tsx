@@ -1,7 +1,7 @@
 import React, { useCallback } from 'react';
-import { BoardState, Position, Move, Color } from '../types';
-import { XiangqiPiece } from './XiangqiPiece';
-import { getValidMoves } from '../utils/gameLogic';
+import { BoardState, Position, Move, Color } from '../types.ts';
+import { XiangqiPiece } from './XiangqiPiece.tsx';
+import { getValidMoves } from '../utils/gameLogic.ts';
 
 interface Props {
   board: BoardState;

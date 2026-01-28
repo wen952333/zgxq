@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Board } from './Board';
-import { BoardState, Color, Move, PieceType, Position } from '../types';
-import { INITIAL_BOARD } from '../constants';
-import { getValidMoves } from '../utils/gameLogic';
-import { getGeminiMove } from '../services/geminiService';
+import { Board } from './Board.tsx';
+import { BoardState, Color, Move, PieceType, Position } from '../types.ts';
+import { INITIAL_BOARD } from '../constants.ts';
+import { getValidMoves } from '../utils/gameLogic.ts';
+import { getGeminiMove } from '../services/geminiService.ts';
 
 interface Props {
   mode: 'pve' | 'pvp';

@@ -6,6 +6,8 @@
     <title>中国象棋</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <!-- Babel Standalone for in-browser transpilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
       body {
         overscroll-behavior: none;
@@ -31,9 +33,18 @@
   }
 }
 </script>
+<script>
+  // Polyfill process.env for browser environment
+  window.process = {
+    env: {
+      API_KEY: '', // You should ideally configure this via a build step, but this prevents crashes.
+      NODE_ENV: 'production'
+    }
+  };
+</script>
 </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/index.tsx"></script>
+    <script type="text/babel" data-type="module" data-presets="react,typescript" src="/index.tsx"></script>
   </body>
 </html>

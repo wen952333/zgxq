@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { User } from '../types';
-import { DEFAULT_TELEGRAM_GROUP_URL, DEFAULT_TELEGRAM_BOT_APP_URL } from '../constants';
+import { User } from '../types.ts';
+import { DEFAULT_TELEGRAM_GROUP_URL, DEFAULT_TELEGRAM_BOT_APP_URL } from '../constants.ts';
 
 interface Props {
   onStartGame: (mode: 'pve' | 'pvp') => void;

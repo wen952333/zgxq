@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Game } from './components/Game';
-import { Lobby } from './components/Lobby';
+import { Game } from './components/Game.tsx';
+import { Lobby } from './components/Lobby.tsx';
 
 type ViewState = 'lobby' | 'pve' | 'pvp';
 

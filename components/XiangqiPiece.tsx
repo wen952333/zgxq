@@ -1,6 +1,6 @@
 import React from 'react';
-import { Color, Piece, PieceType } from '../types';
-import { PIECE_CHARS } from '../constants';
+import { Color, Piece, PieceType } from '../types.ts';
+import { PIECE_CHARS } from '../constants.ts';
 
 interface Props {
   piece: Piece;

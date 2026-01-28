@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { BoardState, Color, Move, PieceType, ROWS, COLS, Position } from '../types';
-import { getValidMoves } from '../utils/gameLogic';
+import { BoardState, Color, Move, PieceType, ROWS, COLS, Position } from '../types.ts';
+import { getValidMoves } from '../utils/gameLogic.ts';
 
 // We calculate all valid moves for the AI side (Black) client-side
 // and send them to the model. The model chooses the best index.
