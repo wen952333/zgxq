@@ -17,8 +17,9 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
     const ai = new GoogleGenAI({ apiKey });
 
+    // Switch to PRO model for better chess reasoning
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-3-pro-preview', 
       contents: prompt,
       config: {
         responseMimeType: "application/json",

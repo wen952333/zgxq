@@ -13,7 +13,12 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [showPvPModal, setShowPvPModal] = useState(false);
+  
+  // Buy Modal State
+  const [showBuyModal, setShowBuyModal] = useState(false);
+  const [buyAmount, setBuyAmount] = useState<string>('50');
   const [isBuying, setIsBuying] = useState(false);
+
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [isCreatingGame, setIsCreatingGame] = useState(false);
   
@@ -121,10 +126,8 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
     }
   };
 
-  const handleBuyPoints = async () => {
+  const handleOpenBuyModal = () => {
     if (!user) { safeAlert("数据加载中，请稍后再试。"); return; }
-    if (isBuying) return;
-    
     // @ts-ignore
     const WebApp = window.Telegram?.WebApp;
     
@@ -132,61 +135,74 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
         safeAlert("环境检测：未在 Telegram 内运行。\n支付功能无法调用。");
         return;
     }
+    setShowBuyModal(true);
+  };
 
-    const starsToBuy = 50;
+  const handleConfirmBuy = async () => {
+    const starsToBuy = parseInt(buyAmount);
+    if (!starsToBuy || starsToBuy <= 0) {
+        safeAlert("请输入有效的数量");
+        return;
+    }
+    
     const pointsToGet = starsToBuy * 500;
     
-    WebApp.showConfirm(`确认购买?\n\n消耗: ${starsToBuy} ⭐ (Stars)\n获得: ${pointsToGet} 积分`, async (ok: boolean) => {
-        if (!ok) return;
+    if (isBuying) return;
+    setIsBuying(true);
+    
+    // @ts-ignore
+    const WebApp = window.Telegram?.WebApp;
 
-        setIsBuying(true);
-
-        try {
-            const invoiceRes = await fetch('/api/create_invoice', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ telegram_id: user.telegram_id, stars: starsToBuy })
-            });
-            
-            const invoiceData = await invoiceRes.json();
-            
-            if (!invoiceData.success) {
-                WebApp.showAlert("创建订单失败: " + (invoiceData.details || invoiceData.error || "BOT_TOKEN 未配置"));
-                setIsBuying(false);
-                return;
-            }
-
-            WebApp.openInvoice(invoiceData.invoice_link, async (status: string) => {
-                setIsBuying(false);
-                
-                if (status === 'paid') {
-                    try {
-                        const creditRes = await fetch('/api/buy_points', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ telegram_id: user.telegram_id, stars: starsToBuy })
-                        });
-                        const creditData = await creditRes.json();
-                        
-                        if (creditData.success) {
-                            setUser(prev => prev ? { ...prev, points: creditData.points } : null);
-                            WebApp.showAlert(`支付成功！\n已到账 ${pointsToGet} 积分`);
-                        }
-                    } catch (e) {
-                        WebApp.showAlert("支付成功，但积分更新超时，请稍后刷新。");
-                    }
-                } else if (status === 'cancelled') {
-                    // cancelled
-                } else {
-                    WebApp.showAlert("支付状态: " + status);
-                }
-            });
-
-        } catch (e) {
-            WebApp.showAlert("请求支付系统出错");
+    try {
+        // 1. Get Invoice Link from Backend
+        const invoiceRes = await fetch('/api/create_invoice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ telegram_id: user!.telegram_id, stars: starsToBuy })
+        });
+        
+        const invoiceData = await invoiceRes.json();
+        
+        if (!invoiceData.success) {
+            WebApp.showAlert("创建订单失败: " + (invoiceData.details || invoiceData.error || "BOT_TOKEN 未配置"));
             setIsBuying(false);
+            return;
         }
-    });
+
+        // Close modal to show invoice cleanly
+        setShowBuyModal(false);
+
+        // 2. Open Telegram Native Invoice
+        WebApp.openInvoice(invoiceData.invoice_link, async (status: string) => {
+            setIsBuying(false);
+            
+            if (status === 'paid') {
+                try {
+                    const creditRes = await fetch('/api/buy_points', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ telegram_id: user!.telegram_id, stars: starsToBuy })
+                    });
+                    const creditData = await creditRes.json();
+                    
+                    if (creditData.success) {
+                        setUser(prev => prev ? { ...prev, points: creditData.points } : null);
+                        WebApp.showAlert(`支付成功！\n已到账 ${pointsToGet} 积分`);
+                    }
+                } catch (e) {
+                    WebApp.showAlert("支付成功，但积分更新超时，请稍后刷新。");
+                }
+            } else if (status === 'cancelled') {
+                // cancelled
+            } else {
+                WebApp.showAlert("支付状态: " + status);
+            }
+        });
+
+    } catch (e) {
+        WebApp.showAlert("请求支付系统出错");
+        setIsBuying(false);
+    }
   };
 
   const handleJoinGroup = () => {
@@ -244,10 +260,12 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
 
   const startPvP = async (restricted: boolean) => {
     if (!user) return;
+    
     if (user.points < 30) {
         safeAlert("积分不足 30，无法开始游戏！");
         return;
     }
+
     const myLevel = calculateLevel(user.points);
     const minLevel = restricted ? Math.max(0, myLevel - 1) : 0;
     await createGameSession(minLevel);
@@ -339,7 +357,7 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
 
                 {/* Buy Button */}
                 <button 
-                    onClick={handleBuyPoints}
+                    onClick={handleOpenBuyModal}
                     disabled={isBuying}
                     className="bg-[#d4b483] hover:bg-[#c2a372] text-[#5c4033] rounded-full p-1 w-6 h-6 flex items-center justify-center transition-colors"
                 >
@@ -417,6 +435,58 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
       
       {/* Footer Decoration */}
       <div className="w-full h-4 bg-[#5c4033] mt-auto"></div>
+
+      {/* Buy Points Modal */}
+      {showBuyModal && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm p-4 animate-fade-in">
+            <div className="bg-[#f0dbb0] w-full max-w-sm rounded-xl border-4 border-[#5c4033] shadow-2xl p-6 relative">
+                <button 
+                  onClick={() => setShowBuyModal(false)}
+                  className="absolute top-2 right-2 text-[#5c4033] hover:bg-[#d4b483] rounded-full p-1"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+                
+                <h2 className="text-2xl font-bold text-[#5c4033] mb-4 text-center border-b border-[#5c4033] pb-2">购买积分</h2>
+                
+                <div className="space-y-4">
+                    <div className="flex flex-col space-y-2">
+                        <label className="text-sm font-bold text-[#5c4033]">输入星星数量 (Stars)</label>
+                        <input 
+                            type="number" 
+                            min="1"
+                            value={buyAmount}
+                            onChange={(e) => setBuyAmount(e.target.value)}
+                            className="w-full p-3 rounded border-2 border-[#5c4033] bg-white text-lg font-mono focus:outline-none focus:ring-2 focus:ring-[#8B0000]"
+                            placeholder="例如: 50"
+                        />
+                    </div>
+                    
+                    <div className="bg-[#5c4033] text-[#f0dbb0] p-3 rounded flex justify-between items-center">
+                        <span>可获得积分:</span>
+                        <span className="text-xl font-bold">{(parseInt(buyAmount) || 0) * 500}</span>
+                    </div>
+
+                    <button 
+                        onClick={handleConfirmBuy}
+                        disabled={isBuying || !buyAmount || parseInt(buyAmount) <= 0}
+                        className="w-full bg-[#8B0000] text-white py-3 rounded-lg font-bold text-lg hover:bg-red-900 transition shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex justify-center"
+                    >
+                         {isBuying ? (
+                            <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                         ) : (
+                             "确认支付"
+                         )}
+                    </button>
+                    <p className="text-xs text-center text-[#5c4033] opacity-70">
+                       1 Star = 500 积分
+                    </p>
+                </div>
+            </div>
+        </div>
+      )}
 
       {/* PvP Matchmaking Modal */}
       {showPvPModal && (
