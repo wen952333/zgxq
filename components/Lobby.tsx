@@ -40,26 +40,27 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
       const username = tgUser?.username || "DevPlayer";
 
       try {
+        // 使用 try-catch 包装 fetch，防止 404 或网络错误阻断应用
         const [userRes, configRes] = await Promise.all([
              fetch(`/api/user?telegram_id=${telegram_id}&username=${username}`).catch(() => ({ ok: false, status: 404 } as Response)),
-             fetch('/api/config').catch(() => ({ ok: false, json: () => Promise.resolve({}) } as any))
+             fetch('/api/config').catch(() => ({ ok: false } as any))
         ]);
 
         if (userRes.ok) {
           const userData = await userRes.json();
           setUser(userData);
         } else {
-          // ================= 核心修复：API 报错容错 (访客模式) =================
-          console.warn(`API 初始化失败 (${userRes.status})，进入访客/本地模式`);
+          // ================= 核心修复：404 容错 (访客模式) =================
+          console.warn(`API 返回 ${userRes.status}，启用访客模式`);
           setUser({
             id: 0,
             telegram_id: telegram_id,
             username: `${username} (访客)`,
-            points: 1000 
+            points: 1000 // 赋予初始积分以便测试
           });
           
           if (userRes.status !== 404) {
-            WebApp?.showAlert?.(`服务器连接异常 (${userRes.status})，部分在线功能受限。`);
+            WebApp?.showAlert?.(`服务器连接异常 (${userRes.status})，已切换至访客模式。`);
           }
         }
 
@@ -115,7 +116,7 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
         const invoiceData = await invoiceRes.json();
         
         if (!invoiceData.success) {
-            safeAlert(`创建订单失败: ${invoiceData.details || invoiceData.error || "未知原因"}`);
+            safeAlert("创建订单失败: " + (invoiceData.error || "未知错误"));
             setIsBuying(false);
             return;
         }
@@ -135,27 +136,26 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
                 const creditData = await creditRes.json();
                 if (creditData.success) {
                     setUser(prev => prev ? { ...prev, points: creditData.points } : null);
-                    safeAlert(`🎉 充值成功！已到账 ${starsToBuy * 500} 积分。`);
+                    safeAlert(`支付成功！已充值 ${starsToBuy * 500} 积分。`);
                 }
-            } else if (status === 'failed' || status === 'error') {
-                // ================= 支付失败后的降级引导 =================
-                safeAlert("Telegram 支付控件响应失败。请点击后续弹窗中的链接尝试手动支付。");
+            } else if (status === 'failed') {
+                // ================= 核心修复：支付失败明确提示并降级 =================
+                safeAlert("原生支付控件调起失败。请尝试点击链接手动支付。");
                 setTimeout(() => {
                     WebApp.openTelegramLink(invoiceLink);
-                }, 1000);
-            } else if (status === 'cancelled') {
-                console.log("Payment cancelled by user.");
+                }, 800);
             }
         });
 
     } catch (e) {
-        safeAlert("支付系统通信异常，请检查网络");
+        safeAlert("支付系统通信异常");
         setIsBuying(false);
     }
   };
 
+  // 其余逻辑保持不变...
   const handleSignIn = async () => {
-    if (!user || user.id === 0) { safeAlert("访客模式无法使用签到系统。"); return; }
+    if (!user || user.id === 0) { safeAlert("访客模式无法签到，请确保网络正常。"); return; }
     if (isSigningIn) return;
     setIsSigningIn(true);
     try {
@@ -169,88 +169,85 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
           setUser(prev => prev ? { ...prev, points: data.points } : null);
           safeAlert(data.message);
       } else {
-          safeAlert(data.message || "今日已签到");
+          safeAlert(data.message || "签到失败");
       }
     } catch (e) { safeAlert("网络错误"); } finally { setIsSigningIn(false); }
   };
 
   const handleJoinGroup = () => {
+    const url = config.groupUrl;
     // @ts-ignore
     const WebApp = window.Telegram?.WebApp;
-    WebApp?.openTelegramLink ? WebApp.openTelegramLink(config.groupUrl) : window.open(config.groupUrl, '_blank');
+    WebApp?.openTelegramLink ? WebApp.openTelegramLink(url) : window.open(url, '_blank');
   };
 
   if (loading) return (
     <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[#f0dbb0] wood-texture">
         <div className="w-12 h-12 border-4 border-[#8B0000] border-t-transparent rounded-full animate-spin mb-4"></div>
-        <p className="font-bold text-[#5c4033] animate-pulse">正在初始化棋力环境...</p>
+        <p className="font-bold text-[#5c4033]">正在连接大厅...</p>
     </div>
   );
 
   return (
     <div className="min-h-screen w-full flex flex-col bg-[#f0dbb0] text-[#4a3b2a] font-sans wood-texture relative">
-      {/* 顶部状态栏 */}
-      <div className="w-full p-4 flex justify-between items-start z-20">
+      <div className="w-full p-4 flex justify-between items-start">
         <button onClick={handleSignIn} className="flex flex-col items-center space-y-1">
-          <div className="w-10 h-10 bg-[#8B0000] rounded-full flex items-center justify-center text-white shadow-lg border-2 border-[#d4b483] active:scale-95 transition">
+          <div className="w-10 h-10 bg-[#8B0000] rounded-full flex items-center justify-center text-white shadow-lg border-2 border-[#d4b483]">
             {isSigningIn ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : "签"}
           </div>
-          <span className="text-[10px] font-bold">每日签到</span>
+          <span className="text-xs font-bold">签到</span>
         </button>
 
         <div className="flex flex-col items-center">
-            <div className="bg-[#8B0000] text-white text-[10px] px-2 py-0.5 rounded-t-lg border-x border-t border-[#d4b483] font-bold">
-                {user?.id === 0 ? '访客' : `Lv.${Math.floor((user?.points||0)/1000)} 棋士`}
+            <div className="bg-[#8B0000] text-white text-[10px] px-2 py-0.5 rounded-t-lg border-x border-t border-[#d4b483]">
+                {user?.id === 0 ? '访客模式' : `Lv.${Math.floor((user?.points||0)/1000)} 棋士`}
             </div>
-            <div className="flex items-center bg-[#5c4033] rounded-full p-1 pr-1 gap-2 border border-[#8B0000] shadow-md">
+            <div className="flex items-center bg-[#5c4033] rounded-full p-1 pr-1 gap-2 border border-[#8B0000]">
                 <div className="flex items-center space-x-1 px-2">
                     <span className="text-yellow-400">🪙</span>
-                    <span className="text-[#d4b483] font-bold text-sm min-w-[30px] text-center">{user?.points || 0}</span>
+                    <span className="text-[#d4b483] font-bold text-sm">{user?.points || 0}</span>
                 </div>
-                <button onClick={() => user?.id !== 0 && setShowBuyModal(true)} className="bg-[#d4b483] text-[#5c4033] rounded-full w-6 h-6 flex items-center justify-center font-bold shadow-inner hover:bg-[#e3c08d] active:scale-110 transition">+</button>
+                <button onClick={() => user?.id !== 0 && setShowBuyModal(true)} className="bg-[#d4b483] text-[#5c4033] rounded-full w-6 h-6 flex items-center justify-center font-bold">+</button>
             </div>
         </div>
 
         <button onClick={handleJoinGroup} className="flex flex-col items-center space-y-1">
-          <div className="w-10 h-10 bg-[#4a6b8a] rounded-full flex items-center justify-center text-white shadow-lg border-2 border-[#d4b483] active:scale-95 transition">群</div>
-          <span className="text-[10px] font-bold">联系棋友</span>
+          <div className="w-10 h-10 bg-[#4a6b8a] rounded-full flex items-center justify-center text-white shadow-lg border-2 border-[#d4b483]">群</div>
+          <span className="text-xs font-bold">棋友群</span>
         </button>
       </div>
 
-      <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-8 z-10">
+      <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-8">
         <div className="text-center">
             <h1 className="text-5xl font-extrabold text-[#5c4033] tracking-widest font-serif drop-shadow-md">中国象棋</h1>
-            <p className="text-[#8B0000] mt-2 font-bold italic opacity-80">-- Gemini 3 Pro AI 对战版 --</p>
+            <p className="text-[#8B0000] mt-2 font-semibold italic">-- Gemini 3 Pro AI 驱动 --</p>
         </div>
 
         <div className="w-full max-w-sm space-y-5">
-            <button onClick={() => user?.points! >= 30 ? onStartGame('pve') : safeAlert("积分不足 30，请先签到或充值。")} className="w-full bg-gradient-to-r from-[#8B0000] to-[#a52a2a] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between border-2 border-[#5c4033] hover:brightness-110 active:scale-[0.98] transition">
-                <div className="text-left"><span className="text-2xl font-bold block">人机对战</span><span className="text-xs opacity-80">挑战最高级别 AI 引擎</span></div>
-                <div className="text-4xl">🤖</div>
+            <button onClick={() => user?.points! >= 30 ? onStartGame('pve') : safeAlert("积分不足 30")} className="w-full bg-gradient-to-r from-[#8B0000] to-[#a52a2a] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between border-2 border-[#5c4033]">
+                <div className="text-left"><span className="text-2xl font-bold block">人机对战</span><span className="text-xs opacity-80">挑战最强 AI 大师</span></div>
+                <div className="text-3xl">🤖</div>
             </button>
 
-            <button disabled={user?.id === 0} onClick={() => setShowPvPModal(true)} className={`w-full bg-gradient-to-r from-[#5c4033] to-[#6d4c41] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between border-2 border-[#3e2723] hover:brightness-110 active:scale-[0.98] transition ${user?.id === 0 ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}>
-                <div className="text-left"><span className="text-2xl font-bold block">棋友约战</span><span className="text-xs opacity-80">邀请好友 实时线上博弈</span></div>
-                <div className="text-4xl">⚔️</div>
+            <button disabled={user?.id === 0} onClick={() => setShowPvPModal(true)} className={`w-full bg-gradient-to-r from-[#5c4033] to-[#6d4c41] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between border-2 border-[#3e2723] ${user?.id === 0 ? 'opacity-50' : ''}`}>
+                <div className="text-left"><span className="text-2xl font-bold block">棋友约战</span><span className="text-xs opacity-80">邀请好友 实时对弈</span></div>
+                <div className="text-3xl">⚔️</div>
             </button>
         </div>
       </div>
 
       {showBuyModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-            <div className="bg-[#f0dbb0] w-full max-w-sm rounded-xl border-4 border-[#5c4033] p-6 relative shadow-2xl">
-                <button onClick={() => setShowBuyModal(false)} className="absolute top-2 right-2 p-2 hover:bg-black/10 rounded-full">✕</button>
-                <h2 className="text-2xl font-bold text-center border-b border-[#5c4033] pb-3 mb-5">购买积分</h2>
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            <div className="bg-[#f0dbb0] w-full max-w-sm rounded-xl border-4 border-[#5c4033] p-6 relative">
+                <button onClick={() => setShowBuyModal(false)} className="absolute top-2 right-2 p-1">✕</button>
+                <h2 className="text-xl font-bold text-center border-b border-[#5c4033] pb-2 mb-4">购买积分</h2>
                 <div className="space-y-4">
-                    <div className="flex flex-col space-y-2">
-                        <label className="text-sm font-bold">输入 Stars 数量 (1⭐ = 500积分)</label>
-                        <input type="number" min="1" value={buyAmount} onChange={(e) => setBuyAmount(e.target.value)} className="w-full p-3 rounded border-2 border-[#5c4033] font-mono text-lg focus:outline-none focus:ring-2 ring-[#8B0000]" />
+                    <div className="flex flex-col space-y-1">
+                        <label className="text-sm font-bold">星星数量 (1⭐ = 500积分)</label>
+                        <input type="number" value={buyAmount} onChange={(e) => setBuyAmount(e.target.value)} className="w-full p-2 rounded border-2 border-[#5c4033] font-mono" />
                     </div>
-                    <div className="p-3 bg-black/5 rounded text-sm italic">
-                        将获得积分: <span className="font-bold text-[#8B0000]">{(parseInt(buyAmount)||0)*500}</span>
-                    </div>
-                    <button onClick={handleConfirmBuy} disabled={isBuying} className="w-full bg-[#8B0000] text-white py-4 rounded-lg font-bold shadow-lg active:scale-95 transition flex items-center justify-center gap-2">
-                        {isBuying ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : "确认支付"}
+                    <button onClick={handleConfirmBuy} disabled={isBuying} className="w-full bg-[#8B0000] text-white py-3 rounded-lg font-bold shadow-lg">
+                        {isBuying ? "正在调起支付..." : `支付 ${buyAmount} 星星`}
                     </button>
                 </div>
             </div>
