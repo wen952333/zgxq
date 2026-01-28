@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from 'react';
 import { User } from '../types.ts';
 import { DEFAULT_TELEGRAM_GROUP_URL, DEFAULT_TELEGRAM_BOT_APP_URL } from '../constants.ts';
@@ -9,6 +10,7 @@ interface Props {
 export const Lobby: React.FC<Props> = ({ onStartGame }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [isSigningIn, setIsSigningIn] = useState(false);
   const [showPvPModal, setShowPvPModal] = useState(false);
   const [isBuying, setIsBuying] = useState(false);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
@@ -22,10 +24,17 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
 
   // Initialize User and Config
   useEffect(() => {
+    // Tell Telegram app we are ready
+    // @ts-ignore
+    window.Telegram?.WebApp?.ready();
+    // @ts-ignore
+    window.Telegram?.WebApp?.expand();
+
     const initUser = async () => {
       // @ts-ignore
       const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
       
+      // Fallback for local testing if not in Telegram
       const telegram_id = tgUser?.id?.toString() || "dev_user_123";
       const username = tgUser?.username || "DevPlayer";
 
@@ -38,6 +47,8 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
         if (userRes.ok) {
           const userData = await userRes.json();
           setUser(userData);
+        } else {
+          console.error("Failed to load user");
         }
 
         if (configRes.ok) {
@@ -58,7 +69,9 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
   }, []);
 
   const handleSignIn = async () => {
-    if (!user) return;
+    if (!user || isSigningIn) return;
+    setIsSigningIn(true);
+    
     try {
       const res = await fetch('/api/signin', {
         method: 'POST',
@@ -66,26 +79,40 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
         body: JSON.stringify({ telegram_id: user.telegram_id })
       });
       const data = await res.json();
-      if (data.success) {
-        setUser({ ...user, points: data.points });
-        alert(data.message);
+      
+      if (res.ok) {
+          if (data.success) {
+            setUser(prev => prev ? { ...prev, points: data.points } : null);
+            // @ts-ignore
+            window.Telegram?.WebApp?.showAlert ? window.Telegram.WebApp.showAlert(data.message) : alert(data.message);
+          } else {
+            // @ts-ignore
+            window.Telegram?.WebApp?.showAlert ? window.Telegram.WebApp.showAlert(data.message) : alert(data.message);
+          }
       } else {
-        alert(data.message || "签到失败");
+          alert("签到失败: " + (data.error || "未知错误"));
       }
     } catch (e) {
+      console.error(e);
       alert("网络错误，请稍后再试");
+    } finally {
+      setIsSigningIn(false);
     }
   };
 
   const handleBuyPoints = async () => {
-    if (!user || isBuying) return;
+    if (!user) {
+        alert("用户信息未加载，请刷新页面。");
+        return;
+    }
+    if (isBuying) return;
     
     // @ts-ignore
     const WebApp = window.Telegram?.WebApp;
     
-    // Check if running in Telegram
-    if (!WebApp.initData) {
-        alert("请在 Telegram 内打开以使用支付功能。");
+    // Check if running in Telegram for Payments
+    if (!WebApp?.initData) {
+        alert("支付功能仅在 Telegram App 内可用。\n\n如果您在开发环境，请检查 WebApp 对象。");
         return;
     }
 
@@ -93,60 +120,65 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
     const pointsToGet = starsToBuy * 500; // Updated rate: 1 Star = 500 Points
     
     // Ask for confirmation before generating link
-    const wantToBuy = confirm(`确认购买?\n\n消耗: ${starsToBuy} ⭐ (Telegram Stars)\n获得: ${pointsToGet} 积分`);
-    if (!wantToBuy) return;
+    // @ts-ignore
+    WebApp.showConfirm(`确认购买?\n\n消耗: ${starsToBuy} ⭐ (Stars)\n获得: ${pointsToGet} 积分`, async (ok: boolean) => {
+        if (!ok) return;
 
-    setIsBuying(true);
+        setIsBuying(true);
 
-    try {
-        // 1. Get Invoice Link from Backend
-        const invoiceRes = await fetch('/api/create_invoice', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ telegram_id: user.telegram_id, stars: starsToBuy })
-        });
-        
-        const invoiceData = await invoiceRes.json();
-        
-        if (!invoiceData.success) {
-            alert("创建订单失败: " + (invoiceData.details || invoiceData.error));
-            setIsBuying(false);
-            return;
-        }
-
-        // 2. Open Telegram Native Invoice
-        WebApp.openInvoice(invoiceData.invoice_link, async (status: string) => {
-            setIsBuying(false);
+        try {
+            // 1. Get Invoice Link from Backend
+            const invoiceRes = await fetch('/api/create_invoice', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ telegram_id: user.telegram_id, stars: starsToBuy })
+            });
             
-            if (status === 'paid') {
-                // 3. On Success, Credit Points
-                try {
-                    const creditRes = await fetch('/api/buy_points', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ telegram_id: user.telegram_id, stars: starsToBuy })
-                    });
-                    const creditData = await creditRes.json();
-                    
-                    if (creditData.success) {
-                        setUser(prev => prev ? { ...prev, points: creditData.points } : null);
-                        WebApp.showAlert(`支付成功！\n已到账 ${pointsToGet} 积分`);
-                    }
-                } catch (e) {
-                    console.error("Error crediting points", e);
-                }
-            } else if (status === 'cancelled') {
-                // User cancelled
-            } else {
-                WebApp.showAlert("支付状态: " + status);
+            const invoiceData = await invoiceRes.json();
+            
+            if (!invoiceData.success) {
+                WebApp.showAlert("创建订单失败: " + (invoiceData.details || invoiceData.error || "服务端未配置 BOT_TOKEN"));
+                setIsBuying(false);
+                return;
             }
-        });
 
-    } catch (e) {
-        console.error(e);
-        alert("支付系统错误");
-        setIsBuying(false);
-    }
+            // 2. Open Telegram Native Invoice
+            WebApp.openInvoice(invoiceData.invoice_link, async (status: string) => {
+                setIsBuying(false);
+                
+                if (status === 'paid') {
+                    // 3. On Success, Credit Points
+                    // Security Note: In production, verify this via Webhook from Telegram!
+                    // Relying on client-side callback is not 100% secure but acceptable for simple MVPs.
+                    try {
+                        const creditRes = await fetch('/api/buy_points', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ telegram_id: user.telegram_id, stars: starsToBuy })
+                        });
+                        const creditData = await creditRes.json();
+                        
+                        if (creditData.success) {
+                            setUser(prev => prev ? { ...prev, points: creditData.points } : null);
+                            WebApp.showAlert(`支付成功！\n已到账 ${pointsToGet} 积分`);
+                        }
+                    } catch (e) {
+                        console.error("Error crediting points", e);
+                        WebApp.showAlert("支付成功，但积分更新失败，请联系管理员。");
+                    }
+                } else if (status === 'cancelled') {
+                    // User cancelled
+                } else {
+                    WebApp.showAlert("支付状态: " + status);
+                }
+            });
+
+        } catch (e) {
+            console.error(e);
+            WebApp.showAlert("请求支付系统出错");
+            setIsBuying(false);
+        }
+    });
   };
 
   const handleJoinGroup = () => {
@@ -216,9 +248,8 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
     if (!inviteLink || !user) return;
     
     const myLevel = calculateLevel(user.points);
-    const isRestricted = inviteLink.includes('restricted'); // Logic placeholder, strictly relying on inviteLink content might need adjustment if logic changes, but for now we know what we clicked.
+    const isRestricted = inviteLink.includes('restricted'); 
     
-    // More engaging share text
     const text = `♟️ *中国象棋对战邀请*\n\n👤 发起人: ${user.username}\n🏆 等级: Lv.${myLevel}\n${isRestricted ? '🔒 限制: 实力相当' : '⚔️ 限制: 无门槛'}\n\n点击下方链接，直接进入游戏对战 👇`;
     
     const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(inviteLink)}&text=${encodeURIComponent(text)}`;
@@ -241,13 +272,18 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
       <div className="w-full p-4 flex justify-between items-start">
         {/* Sign In */}
         <button 
-          className="flex flex-col items-center space-y-1 active:scale-95 transition-transform"
+          className={`flex flex-col items-center space-y-1 transition-transform ${isSigningIn || !user ? 'opacity-70 cursor-not-allowed' : 'active:scale-95'}`}
           onClick={handleSignIn}
+          disabled={isSigningIn || !user}
         >
           <div className="w-10 h-10 bg-[#8B0000] rounded-full flex items-center justify-center text-white shadow-lg border-2 border-[#d4b483]">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5m-9-6h.008v.008H12v-.008zM12 15h.008v.008H12V15zm0 2.25h.008v.008H12v-.008zM9.75 15h.008v.008H9.75V15zm0 2.25h.008v.008H9.75v-.008zM7.5 15h.008v.008H7.5V15zm0 2.25h.008v.008H7.5v-.008zm6.75-4.5h.008v.008h-.008v-.008zm0 2.25h.008v.008h-.008V15zm0 2.25h.008v.008h-.008v-.008zm2.25-4.5h.008v.008H16.5v-.008zm0 2.25h.008v.008H16.5V15z" />
-            </svg>
+            {isSigningIn ? (
+               <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+            ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5m-9-6h.008v.008H12v-.008zM12 15h.008v.008H12V15zm0 2.25h.008v.008H12v-.008zM9.75 15h.008v.008H9.75V15zm0 2.25h.008v.008H9.75v-.008zM7.5 15h.008v.008H7.5V15zm0 2.25h.008v.008H7.5v-.008zm6.75-4.5h.008v.008h-.008v-.008zm0 2.25h.008v.008h-.008V15zm0 2.25h.008v.008h-.008v-.008zm2.25-4.5h.008v.008H16.5v-.008zm0 2.25h.008v.008H16.5V15z" />
+                </svg>
+            )}
           </div>
           <span className="text-xs font-bold text-[#5c4033]">签到 +50</span>
         </button>
@@ -266,14 +302,14 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
                         <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zM9 7.5A.75.75 0 019.75 6.75h4.5a.75.75 0 010 1.5h-4.5A.75.75 0 019 7.5zm0 3.75a.75.75 0 01.75-.75h4.5a.75.75 0 010 1.5h-4.5a.75.75 0 01-.75-.75zM9 15a.75.75 0 01.75-.75h4.5a.75.75 0 010 1.5h-4.5A.75.75 0 019 15z" clipRule="evenodd" />
                     </svg>
                     <span className="text-[#d4b483] font-bold text-sm min-w-[30px] text-center">
-                      {loading ? "..." : user?.points}
+                      {loading || !user ? "..." : user.points}
                     </span>
                 </div>
 
                 {/* Buy Button */}
                 <button 
                     onClick={handleBuyPoints}
-                    disabled={isBuying}
+                    disabled={isBuying || !user}
                     className="bg-[#d4b483] hover:bg-[#c2a372] text-[#5c4033] rounded-full p-1 w-6 h-6 flex items-center justify-center transition-colors disabled:opacity-50"
                 >
                     {isBuying ? (
@@ -317,7 +353,8 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
             {/* PvE Button */}
             <button 
                 onClick={() => onStartGame('pve')}
-                className="w-full bg-gradient-to-r from-[#8B0000] to-[#a52a2a] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between hover:scale-105 transition-transform duration-200 border-2 border-[#5c4033]"
+                disabled={!user}
+                className="w-full bg-gradient-to-r from-[#8B0000] to-[#a52a2a] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between hover:scale-105 transition-transform duration-200 border-2 border-[#5c4033] disabled:opacity-50 disabled:scale-100"
             >
                 <div className="flex flex-col items-start">
                     <span className="text-2xl font-bold">人机对战</span>
@@ -333,7 +370,8 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
             {/* PvP Button */}
             <button 
                 onClick={handlePvPClick}
-                className="w-full bg-gradient-to-r from-[#5c4033] to-[#6d4c41] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between hover:scale-105 transition-transform duration-200 border-2 border-[#3e2723]"
+                disabled={!user}
+                className="w-full bg-gradient-to-r from-[#5c4033] to-[#6d4c41] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between hover:scale-105 transition-transform duration-200 border-2 border-[#3e2723] disabled:opacity-50 disabled:scale-100"
             >
                 <div className="flex flex-col items-start">
                     <span className="text-2xl font-bold">棋友约战</span>

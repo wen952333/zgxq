@@ -8,7 +8,8 @@ interface Env {
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   try {
-    const { telegram_id, stars } = await context.request.json() as { telegram_id: string, stars: number };
+    const body = await context.request.json() as { telegram_id: string, stars: number };
+    const { telegram_id, stars } = body;
 
     if (!telegram_id || !stars) {
       return new Response(JSON.stringify({ error: "Missing parameters" }), { status: 400 });
@@ -18,18 +19,20 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       return new Response(JSON.stringify({ error: "Server misconfiguration: BOT_TOKEN missing" }), { status: 500 });
     }
 
+    // Ensure stars is an integer
+    const amount = Math.floor(stars);
     // Updated Rate: 1 Star = 500 Points
-    const points = stars * 500;
+    const points = amount * 500;
     
     // Call Telegram Bot API to create an invoice link
     // Currency "XTR" is for Telegram Stars
     const payload = {
       title: "购买积分",
-      description: `支付 ${stars} 个星星以获取 ${points} 积分`,
-      payload: JSON.stringify({ telegram_id, stars, points, timestamp: Date.now() }),
+      description: `支付 ${amount} 个星星以获取 ${points} 积分`,
+      payload: JSON.stringify({ telegram_id, stars: amount, points, timestamp: Date.now() }),
       provider_token: "", // Empty for Telegram Stars
       currency: "XTR",
-      prices: [{ label: `${points} 积分`, amount: stars }], // amount is number of stars
+      prices: [{ label: `${points} 积分`, amount: amount }], // amount is number of stars
     };
 
     const tgResponse = await fetch(`https://api.telegram.org/bot${context.env.BOT_TOKEN}/createInvoiceLink`, {

@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Board } from './Board.tsx';
 import { BoardState, Color, Move, PieceType, Position } from '../types.ts';
 import { INITIAL_BOARD } from '../constants.ts';
@@ -8,7 +9,7 @@ import { getGeminiMove } from '../services/geminiService.ts';
 interface Props {
   mode: 'pve' | 'pvp';
   onBack: () => void;
-  invitedGameId?: string | null; // Optional prop for direct joining
+  invitedGameId?: string | null;
 }
 
 export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
@@ -21,24 +22,57 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const [moveHistory, setMoveHistory] = useState<string[]>([]);
   const [resultMessage, setResultMessage] = useState<string>("");
   const [statusMessage, setStatusMessage] = useState<string>("");
+  
+  // Prevent double deduction
+  const hasDeducted = useRef(false);
 
-  // Join Logic for PvP
+  // Initial Logic: Deduct Points or Join Game
   useEffect(() => {
-      const joinGame = async () => {
-          if (mode === 'pvp' && invitedGameId) {
+    // @ts-ignore
+    const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+    const telegram_id = tgUser?.id?.toString() || "dev_user_123";
+
+    // 1. PvE: Deduct Entry Fee immediately
+    if (mode === 'pve' && !hasDeducted.current) {
+        hasDeducted.current = true;
+        const deductPoints = async () => {
+            try {
+                const res = await fetch('/api/deduct_points', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ telegram_id, amount: 30 })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    setStatusMessage(`对局开始 - 已扣除 30 积分 (当前: ${data.points})`);
+                } else {
+                    alert("无法开始对局: " + data.error);
+                    onBack();
+                }
+            } catch (e) {
+                alert("网络连接失败");
+                onBack();
+            }
+        };
+        deductPoints();
+    }
+
+    // 2. PvP: Join Logic
+    if (mode === 'pvp' && invitedGameId && !hasDeducted.current) {
+         // Note: For PvP, we might want to handle deduction differently (e.g. at create or join).
+         // For now, let's keep the join logic but acknowledge we are "in".
+         hasDeducted.current = true; 
+         
+         const joinGame = async () => {
              setStatusMessage("正在加入房间...");
-             // @ts-ignore
-             const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
-             const telegram_id = tgUser?.id?.toString() || "dev_user_joiner";
              const username = tgUser?.username || "DevJoiner";
 
-             // 1. Need user data to know level
              try {
+                // Get user info mainly for level check
                 const userRes = await fetch(`/api/user?telegram_id=${telegram_id}&username=${username}`);
                 const userData = await userRes.json();
                 const userLevel = userData.points ? Math.floor(userData.points / 1000) : 0;
 
-                // 2. Attempt Join
                 const joinRes = await fetch('/api/join_game', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -49,8 +83,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                 
                 if (joinData.success) {
                     setStatusMessage(joinData.message || "对局开始！");
-                    // In a real app, here we would start the WebSocket connection
-                    // For now, we allow the board to be interactive locally.
+                    // Assuming PvP deduction happens elsewhere or is free for this beta
                 } else {
                     alert(joinData.error);
                     onBack();
@@ -58,66 +91,59 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
              } catch (e) {
                  console.error(e);
                  setStatusMessage("连接失败");
+                 onBack();
              }
-          }
-      };
-      
-      joinGame();
+         };
+         joinGame();
+    }
   }, [mode, invitedGameId, onBack]);
 
-  // Sound effects (Optional, placeholder)
   const playSound = (type: 'move' | 'capture') => {
-    // const audio = new Audio(type === 'move' ? '/move.mp3' : '/capture.mp3');
-    // audio.play().catch(() => {}); 
+    // Placeholder
   };
 
   const handleGameEnd = async (winnerColor: Color) => {
     setWinner(winnerColor);
     
-    // Calculate result for current user (Red)
-    // Red wins = win, Black wins = loss
+    // Result for RED (User)
     const result = winnerColor === Color.RED ? 'win' : 'loss';
     
     // @ts-ignore
     const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
     const telegram_id = tgUser?.id?.toString() || "dev_user_123";
 
-    try {
-        const res = await fetch('/api/game_result', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ telegram_id, result })
-        });
-        const data = await res.json();
-        if (data.success) {
-            setResultMessage(data.message);
-        } else {
-            console.error("Points update failed:", data.error);
+    if (mode === 'pve') {
+        // Only call backend to give REWARD. Deduction happened at start.
+        try {
+            const res = await fetch('/api/game_result', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ telegram_id, result })
+            });
+            const data = await res.json();
+            if (data.success) {
+                setResultMessage(data.message);
+            }
+        } catch (e) {
+            console.error("Points update failed");
         }
-    } catch (e) {
-        console.error("Network error updating points");
+    } else {
+        setResultMessage(result === 'win' ? "恭喜胜利!" : "遗憾落败");
     }
   };
 
   const handleSelect = (pos: Position) => {
     if (winner || isAiThinking) return;
-    
-    // In PvE, only Red (Human) can select during their turn
     if (mode === 'pve' && turn !== Color.RED) return;
 
-    // In PvP, check if the piece belongs to current turn
     const piece = board[pos.y][pos.x];
-    // If selecting a new piece, ensure it's the correct color
-    if (!selectedPos && piece && piece.color !== turn) return; 
-
-    // Toggle selection
+    
     if (selectedPos && selectedPos.x === pos.x && selectedPos.y === pos.y) {
       setSelectedPos(null);
       setValidMoves([]);
       return;
     }
 
-    // If switching piece selection (clicking another friendly piece)
     if (piece && piece.color === turn) {
         setSelectedPos(pos);
         const moves = getValidMoves(board, pos);
@@ -127,78 +153,71 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   };
 
   const executeMove = useCallback((move: Move) => {
-    const newBoard = board.map(row => row.map(p => p)); // Deep copy structure
+    const newBoard = board.map(row => row.map(p => p));
     const sourcePiece = newBoard[move.from.y][move.from.x];
     const targetPiece = newBoard[move.to.y][move.to.x];
 
     if (!sourcePiece) return;
 
-    // Move Piece
-    newBoard[move.to.y][move.to.x] = { ...sourcePiece }; // Copy piece
+    newBoard[move.to.y][move.to.x] = { ...sourcePiece };
     newBoard[move.from.y][move.from.x] = null;
 
     setBoard(newBoard);
     setSelectedPos(null);
     setValidMoves([]);
     
-    // Simple localization for history
-    const pieceName = sourcePiece.type === PieceType.GENERAL ? (sourcePiece.color === Color.RED ? '帅' : '将') :
-                      sourcePiece.type === PieceType.ADVISOR ? (sourcePiece.color === Color.RED ? '仕' : '士') :
-                      sourcePiece.type === PieceType.ELEPHANT ? (sourcePiece.color === Color.RED ? '相' : '象') :
-                      sourcePiece.type === PieceType.HORSE ? '马' :
-                      sourcePiece.type === PieceType.CHARIOT ? '车' :
-                      sourcePiece.type === PieceType.CANNON ? (sourcePiece.color === Color.RED ? '炮' : '砲') :
-                      (sourcePiece.color === Color.RED ? '兵' : '卒');
-
+    const pieceName = sourcePiece.type.toUpperCase().slice(0, 2);
     setMoveHistory(prev => [...prev, `${sourcePiece.color === Color.RED ? '🔴' : '⚫'} ${pieceName}: (${move.from.x},${move.from.y})→(${move.to.x},${move.to.y})`]);
     
     playSound(targetPiece ? 'capture' : 'move');
 
-    // Check Win Condition AFTER move update
     if (targetPiece && targetPiece.type === PieceType.GENERAL) {
       handleGameEnd(sourcePiece.color);
     } else {
-      // Switch Turn
       setTurn(prev => prev === Color.RED ? Color.BLACK : Color.RED);
     }
-  }, [board]); // Added handleGameEnd dependency concept internally via useCallback structure if needed, but safe here
+  }, [board]);
 
-  const resetGame = () => {
-    // Note: Resetting game usually implies a new game, which might need fee deduction again. 
-    // For simplicity, we just reset board. In a real app, this might trigger a new "session".
-    setBoard(INITIAL_BOARD);
-    setTurn(Color.RED);
-    setWinner(null);
-    setSelectedPos(null);
-    setValidMoves([]);
-    setMoveHistory([]);
-    setResultMessage("");
+  // Handle manual reset/rematch logic carefully with fees
+  const handleRematch = () => {
+      // For PVE, a rematch means a NEW game, so we need to deduct points again.
+      // Easiest way is to unmount/remount or manually trigger logic.
+      // Let's reload the component logic by forcing a "Back" then "Start" effectively, 
+      // OR reset state and set hasDeducted=false to trigger effect.
+      setBoard(INITIAL_BOARD);
+      setTurn(Color.RED);
+      setWinner(null);
+      setSelectedPos(null);
+      setValidMoves([]);
+      setMoveHistory([]);
+      setResultMessage("");
+      setStatusMessage("");
+      hasDeducted.current = false; // Trigger deduction again
   };
 
-  // AI Turn Effect
+  // AI Turn
   useEffect(() => {
     if (mode === 'pve' && turn === Color.BLACK && !winner) {
       const makeAiMove = async () => {
         setIsAiThinking(true);
-        // Small delay for UX
-        await new Promise(resolve => setTimeout(resolve, 500)); 
+        // await new Promise(resolve => setTimeout(resolve, 500)); 
         
         try {
           const move = await getGeminiMove(board);
           if (move) {
             executeMove(move);
           } else {
-            console.log("No valid moves for AI. Stalemate?");
-            // Simple check: if AI has no moves, Red wins (roughly)
+            // Stalemate or trapped? 
+            console.log("AI No Move");
+            // If AI cannot move, Red wins in Xiangqi usually
             handleGameEnd(Color.RED);
           }
         } catch (e) {
-          console.error("AI failed", e);
+          console.error("AI Error", e);
         } finally {
           setIsAiThinking(false);
         }
       };
-      
       makeAiMove();
     }
   }, [turn, winner, board, executeMove, mode]);
@@ -215,12 +234,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
             </button>
             <h1 className="text-xl font-bold tracking-wider">中国象棋</h1>
         </div>
-        <button 
-          onClick={resetGame}
-          className="bg-[#d4b483] text-[#5c4033] px-3 py-1 rounded text-sm font-semibold hover:bg-[#c2a372] transition"
-        >
-          重新开始
-        </button>
       </header>
 
       {/* Game Status */}
@@ -266,7 +279,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
             </p>
             <div className="flex flex-col space-y-3">
                 <button 
-                onClick={resetGame}
+                onClick={handleRematch}
                 className="w-full bg-[#8B0000] text-white py-3 rounded-lg font-bold text-lg hover:bg-red-900 transition shadow-lg"
                 >
                 再来一局
