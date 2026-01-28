@@ -168,15 +168,20 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
             return;
         }
 
+        const invoiceLink = invoiceData.invoice_link;
+        console.log("Invoice Link:", invoiceLink);
+
         // Close modal to show invoice cleanly
         setShowBuyModal(false);
 
         // 2. Open Telegram Native Invoice
-        WebApp.openInvoice(invoiceData.invoice_link, async (status: string) => {
+        // We handle potential failures by falling back to opening the link directly
+        WebApp.openInvoice(invoiceLink, async (status: string) => {
             setIsBuying(false);
             
             if (status === 'paid') {
                 try {
+                    // Note: Ideally this should be handled by a webhook on backend for security
                     const creditRes = await fetch('/api/buy_points', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -192,9 +197,10 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
                     WebApp.showAlert("支付成功，但积分更新超时，请稍后刷新。");
                 }
             } else if (status === 'cancelled') {
-                // cancelled
+                // cancelled by user
             } else if (status === 'failed') {
-                WebApp.showAlert("支付失败 (Status: failed)。\n可能原因：Telegram 版本过低或网络问题。");
+                // Fallback: Try to open the link directly if the Mini App API failed
+                WebApp.openTelegramLink(invoiceLink);
             } else {
                 WebApp.showAlert("支付状态: " + status);
             }

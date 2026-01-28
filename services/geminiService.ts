@@ -72,6 +72,7 @@ const callBackendAI = async (endpoint: string, prompt: string, allMoves: { move:
         
         const data = await res.json();
         let text = data.text || "";
+        // Clean markdown if present (though JSON mode should prevent it)
         text = text.replace(/```json/g, '').replace(/```/g, '').trim();
         
         const jsonStart = text.indexOf('{');
@@ -84,7 +85,7 @@ const callBackendAI = async (endpoint: string, prompt: string, allMoves: { move:
         const index = json.bestMoveIndex;
 
         if (typeof index === 'number' && index >= 0 && index < allMoves.length) {
-            console.log(`AI Reasoning:`, json.reasoning);
+            console.log(`AI Analysis:`, json.reasoning);
             return allMoves[index].move;
         }
     } catch (e) {
@@ -118,58 +119,67 @@ export const getGeminiMove = async (board: BoardState): Promise<Move | null> => 
 
   const fen = boardToFen(board);
   const visualBoard = boardToString(board);
-  const movesStr = allMoves.map((m, i) => `Index ${i}: ${m.notation}`).join('\n');
+  const movesStr = allMoves.map((m, i) => `MoveIndex ${i}: ${m.notation}`).join('\n');
   
-  // Advanced Prompt for Grandmaster level play
+  // High-Performance Xiangqi Prompt
   const prompt = `
-    You are a World Class Xiangqi (Chinese Chess) Engine. You are playing BLACK. Red is the opponent.
+    Role: You are a Grandmaster Xiangqi Engine playing BLACK. Red is opponent.
     
-    **Current Board (FEN):** ${fen}
-    **Visual:** 
+    Current FEN: ${fen}
+    Visual Board: 
     ${visualBoard}
 
-    **Candidates:**
+    Candidate Moves for Black:
     ${movesStr}
 
-    **Analysis Task:**
-    1. **Identify Threats:** Is Black in Check? Is a key piece (Chariot/Cannon) under attack?
-    2. **Find Tactics:** Look for Forks, Pins, Skewers, or Discovered Attacks.
-    3. **Material Value:** Chariot(9) > Cannon(4.5) ≈ Horse(4) > Elephant(2) ≈ Advisor(2) > Soldier(1).
-    4. **Safety:** Do NOT leave the General exposed to checkmate.
-    5. **Selection:** Pick the move that maximizes Black's winning chances.
-    
-    **CRITICAL:**
-    - If you can capture a Chariot for free, DO IT.
-    - If you can Checkmate, DO IT.
-    - Avoid moves that immediately lose a piece for nothing.
+    Task: Analyze the position deeply and select the ABSOLUTE BEST move from the list above.
 
-    Output STRICT JSON:
-    {
-        "reasoning": "Step-by-step tactical analysis...",
-        "bestMoveIndex": <integer>
-    }
+    Evaluation Priorities (Highest to Lowest):
+    1. **CHECKMATE**: If a move leads to immediate checkmate of Red, PLAY IT.
+    2. **SAFETY**: If Black's General is in check or threatened, you MUST save it.
+    3. **MATERIAL GAIN**: Look for free captures. 
+       - Taking a Chariot (R/r) is huge value (9 pts).
+       - Taking a Cannon (C/c) or Horse (N/n) is high value (4.5 pts).
+    4. **TRADES**: Do not trade a Chariot for a Soldier. Trade evenly or favorably.
+    5. **POSITION**: Control the center, restrict enemy Chariots.
+
+    Negative Constraints:
+    - DO NOT make a move that allows Red to immediately capture your Chariot or General for free.
+    - DO NOT move pieces aimlessly.
+    - DO NOT repeat moves if a better option exists.
+
+    Response Requirement:
+    Return a JSON object with:
+    - "reasoning": A detailed chain of thought explaining WHY this move wins or saves the game.
+    - "bestMoveIndex": The integer index of the chosen move from the provided list.
   `;
 
-  // Use gemini endpoint (which should map to gemini-3-pro-preview in backend)
+  // Use gemini endpoint
   const move = await callBackendAI('/api/gemini', prompt, allMoves);
   if (move) return move;
 
   // Fallback Heuristic
   console.warn("AI failed, using heuristic fallback.");
   
-  // 1. Capture highest value piece
-  const valueMap: Record<string, number> = { 'general': 1000, 'chariot': 9, 'cannon': 5, 'horse': 4, 'advisor': 2, 'elephant': 2, 'soldier': 1 };
+  const valueMap: Record<string, number> = { 'general': 1000, 'chariot': 90, 'cannon': 50, 'horse': 45, 'advisor': 20, 'elephant': 20, 'soldier': 10 };
   
   let bestMove = allMoves[0].move;
-  let maxScore = -100;
+  let maxScore = -9999;
 
   for (const m of allMoves) {
       let score = 0;
       const target = board[m.move.to.y][m.move.to.x];
-      if (target) score += (valueMap[target.type] || 0) * 10;
       
-      // Simple centrality bonus
-      if (m.move.to.x >= 3 && m.move.to.x <= 5) score += 1;
+      // Material Gain
+      if (target) score += (valueMap[target.type] || 0);
+
+      // Positional: Advance soldiers
+      if (board[m.move.from.y][m.move.from.x]?.type === PieceType.SOLDIER) {
+          if (m.move.to.y > 4) score += 5; // Crossed river
+      }
+
+      // Avoid stupid moves (random noise)
+      score += Math.random() * 2;
 
       if (score > maxScore) {
           maxScore = score;

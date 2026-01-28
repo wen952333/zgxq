@@ -17,7 +17,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
     const ai = new GoogleGenAI({ apiKey });
 
-    // Switch to PRO model for better chess reasoning
+    // Enable Thinking Config for deeper reasoning on Chess positions
     const response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview', 
       contents: prompt,
@@ -30,7 +30,12 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
             reasoning: { type: Type.STRING }
           },
           required: ["bestMoveIndex"]
-        }
+        },
+        // CRITICAL: Allocate token budget for internal reasoning (Thinking Process)
+        // This makes the model "think" before answering, drastically improving chess moves.
+        thinkingConfig: { 
+          thinkingBudget: 2048 
+        } 
       }
     });
 

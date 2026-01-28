@@ -18,13 +18,16 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       return new Response(JSON.stringify({ error: "Server misconfiguration: BOT_TOKEN missing" }), { status: 500 });
     }
 
-    // Ensure integer for Telegram API
+    // Ensure integer for Telegram API (Stars must be integer)
     const amount = Math.floor(stars);
+    if (amount <= 0) {
+        return new Response(JSON.stringify({ error: "Invalid stars amount" }), { status: 400 });
+    }
+
     // Updated Rate: 1 Star = 500 Points
     const points = amount * 500;
     
     // Payload optimization: Keep it extremely short (<128 bytes)
-    // t: telegram_id, s: stars
     const shortPayload = JSON.stringify({ t: telegram_id, s: amount });
 
     // Call Telegram Bot API to create an invoice link
@@ -33,7 +36,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       title: "购买积分",
       description: `支付 ${amount} 个星星获取 ${points} 积分`,
       payload: shortPayload, 
-      provider_token: "", // Empty for Telegram Stars
+      provider_token: "", // Strictly empty for Telegram Stars
       currency: "XTR",
       prices: [{ label: `${points} 积分`, amount: amount }], // amount is number of stars
     };
