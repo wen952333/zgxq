@@ -36,7 +36,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const [resultMessage, setResultMessage] = useState<string>("");
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
-  const [isPondering, setIsPondering] = useState(false); // 新增状态
+  const [isPondering, setIsPondering] = useState(false);
   
   const [timeLeft, setTimeLeft] = useState(TURN_TIME_LIMIT);
   const [historyStack, setHistoryStack] = useState<BoardState[]>([]);
@@ -44,9 +44,10 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   
   const hasDeducted = useRef(false);
 
+  // ... (Keep existing Logic Hooks: Timer, Pondering, Suggestions, InitGame) ...
+  // Timer
   useEffect(() => {
     if (winner || isInitializing || (mode === 'pve' && turn === Color.BLACK && isAiThinking)) return;
-
     const timer = setInterval(() => {
         setTimeLeft((prev) => {
             if (prev <= 1) {
@@ -57,19 +58,14 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
             return prev - 1;
         });
     }, 1000);
-
     return () => clearInterval(timer);
   }, [turn, winner, isInitializing, mode, isAiThinking]);
 
-  // AI Pondering (后台推演)
+  // AI Pondering
   useEffect(() => {
-      // 只有在 PVE 模式，轮到玩家思考时，AI 才进行后台计算
       if (mode === 'pve' && turn === Color.RED && !winner && !isInitializing) {
           setIsPondering(true);
           const timer = setTimeout(() => {
-             // AI 尝试站在黑方视角，提前计算可能的应招
-             // 注意：这里是假设玩家还没有走，AI 实际上是在算当前局面如果轮到黑方走会怎么样？
-             // 这有助于“军师”功能，也有助于充实置换表
              ponder(board, Color.BLACK);
              setIsPondering(false); 
           }, 1000);
@@ -79,7 +75,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
       }
   }, [turn, mode, board, winner, isInitializing]);
 
-  // AI 军师建议 (当轮到红方时)
+  // AI Suggestion
   useEffect(() => {
     if (turn === Color.RED && !winner && !isInitializing) {
         setIsSuggesting(true);
@@ -95,7 +91,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     }
   }, [turn, board, winner, isInitializing]);
 
-  // Init Game
+  // Game Init
   useEffect(() => {
     // @ts-ignore
     const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
@@ -104,7 +100,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     if (mode === 'pve' && !hasDeducted.current) {
         hasDeducted.current = true;
         setIsInitializing(true);
-        setStatusMessage("正在进入对局 (扣除30积分)...");
+        setStatusMessage("进入对局 (-30分)...");
 
         const deductPoints = async () => {
             try {
@@ -115,14 +111,14 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                 });
                 const data = res.ok ? await res.json() : { success: false };
                 if (data.success) {
-                    setStatusMessage(`对局开始 (当前积分: ${data.points})`);
+                    setStatusMessage(`对局开始`);
                 } else {
-                    setStatusMessage("对局开始 (离线/免扣分)");
+                    setStatusMessage("免扣分模式");
                 }
                 setIsInitializing(false);
                 setHistoryStack([INITIAL_BOARD.map(row => row.map(p => p ? {...p} : null))]);
             } catch (e) {
-                setStatusMessage("对局开始 (离线模式)");
+                setStatusMessage("离线模式");
                 setIsInitializing(false);
                 setHistoryStack([INITIAL_BOARD.map(row => row.map(p => p ? {...p} : null))]);
             }
@@ -135,7 +131,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     if (mode === 'pvp' && invitedGameId && !hasDeducted.current) {
          hasDeducted.current = true; 
          setIsInitializing(true);
-         setStatusMessage("正在加入房间...");
+         setStatusMessage("加入房间...");
          const joinGame = async () => {
              const username = tgUser?.username || "DevJoiner";
              try {
@@ -150,7 +146,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                 });
                 const joinData = await joinRes.json();
                 if (joinData.success) {
-                    setStatusMessage(joinData.message || "对局开始！");
+                    setStatusMessage(joinData.message || "对局开始");
                     setIsInitializing(false);
                 } else {
                     alert(joinData.error);
@@ -165,10 +161,10 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     }
   }, [mode, invitedGameId, onBack]);
 
+  // ... (Keep existing Logic: handleGameEnd, handleSelect, executeMove, undo, surrender, draw) ...
   const handleGameEnd = async (winnerColor: Color | 'Draw', reason: string = "") => {
     setWinner(winnerColor);
     setResultMessage(reason);
-    // ... result logic ...
     // @ts-ignore
     const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
     const telegram_id = tgUser?.id?.toString() || "dev_user_123";
@@ -189,7 +185,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const handleSelect = (pos: Position) => {
     if (winner || isAiThinking || isInitializing) return;
     if (mode === 'pve' && turn !== Color.RED) return;
-
     const piece = board[pos.y][pos.x];
     if (selectedPos && selectedPos.x === pos.x && selectedPos.y === pos.y) {
       setSelectedPos(null);
@@ -208,49 +203,41 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
         if (newHistory.length > 20) newHistory.shift();
         return newHistory;
     });
-
     const newBoard = board.map(row => row.map(p => p));
     const sourcePiece = newBoard[move.from.y][move.from.x];
-    
     if (!sourcePiece) return;
-
     newBoard[move.to.y][move.to.x] = { ...sourcePiece };
     newBoard[move.from.y][move.from.x] = null;
-
     setBoard(newBoard);
     setSelectedPos(null);
     setValidMoves([]);
     setTimeLeft(TURN_TIME_LIMIT); 
-    
     const nextTurn = turn === Color.RED ? Color.BLACK : Color.RED;
     const currentFen = boardToFen(newBoard, nextTurn);
     setFenHistory(prev => {
         const newFenHistory = [...prev, currentFen];
         const occurrences = newFenHistory.filter(f => f === currentFen).length;
         if (occurrences >= 3) {
-            setTimeout(() => handleGameEnd('Draw', "三次重复局面，自动和棋"), 500);
+            setTimeout(() => handleGameEnd('Draw', "三次重复局面，和棋"), 500);
         }
         return newFenHistory;
     });
-
     const targetPiece = board[move.to.y][move.to.x];
     if (targetPiece && targetPiece.type === PieceType.GENERAL) {
       handleGameEnd(sourcePiece.color, "将死！");
       return;
     }
-
     if (!hasLegalMoves(newBoard, nextTurn)) {
-         setTimeout(() => handleGameEnd(sourcePiece.color, "对方无棋可走 (困毙)，胜利！"), 500);
+         setTimeout(() => handleGameEnd(sourcePiece.color, "困毙获胜！"), 500);
          return;
     }
-
     setTurn(nextTurn);
   }, [board, turn, fenHistory]);
 
   const handleUndo = () => {
     if (mode !== 'pve' || turn !== Color.RED || winner) return;
     if (historyStack.length < 2) {
-        alert("无法悔棋 (开局或记录不足)");
+        alert("无法悔棋");
         return;
     }
     const prevBoard = historyStack[historyStack.length - 2];
@@ -266,7 +253,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
 
   const handleSurrender = () => {
       if (winner) return;
-      if (confirm("确定要投降认输吗？将扣除积分。")) {
+      if (confirm("确定投降？")) {
           handleGameEnd(turn === Color.RED ? Color.BLACK : Color.RED, "投降认输");
       }
   };
@@ -282,14 +269,12 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
       const makeAiMove = async () => {
         setIsAiThinking(true);
         await new Promise(resolve => setTimeout(resolve, 300));
-        
         try {
           const move = await getGeminiMove(board);
           if (move) {
             executeMove(move);
           } else {
-            console.log("AI Resigns");
-            handleGameEnd(Color.RED, "AI 认输 (无路可走)");
+            handleGameEnd(Color.RED, "AI 认输");
           }
         } catch (e) {
           console.error("AI Error", e);
@@ -306,6 +291,59 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
       setValidMoves(getValidMoves(board, move.from));
   };
 
+  // ================= Renders =================
+
+  // 1. River HUD Content
+  const renderRiverHUD = () => (
+      <>
+        {/* Black Side (Left) */}
+        <div className={`flex flex-col items-start justify-center pl-4 ${turn === Color.BLACK ? 'opacity-100 scale-105' : 'opacity-60'}`}>
+            <span className="text-sm font-bold text-[#5c4033] leading-none">
+                {mode === 'pve' ? 'Gemini AI' : '对方'}
+            </span>
+            <div className="flex items-center gap-1 mt-1">
+                {turn === Color.BLACK && !winner ? (
+                     isAiThinking ? (
+                        <div className="flex space-x-1">
+                            <div className="w-1.5 h-1.5 bg-black rounded-full animate-bounce"></div>
+                            <div className="w-1.5 h-1.5 bg-black rounded-full animate-bounce delay-75"></div>
+                            <div className="w-1.5 h-1.5 bg-black rounded-full animate-bounce delay-150"></div>
+                        </div>
+                     ) : (
+                        <span className="text-xs font-mono font-bold text-[#5c4033]">{timeLeft}s</span>
+                     )
+                ) : (
+                    <span className="text-[10px] text-[#5c4033]">等待中</span>
+                )}
+            </div>
+        </div>
+
+        {/* Center Status */}
+        {statusMessage && (
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-[#8B0000] text-white text-[10px] px-2 py-0.5 rounded shadow whitespace-nowrap opacity-80 z-20">
+                {statusMessage}
+            </div>
+        )}
+
+        {/* Red Side (Right) */}
+        <div className={`flex flex-col items-end justify-center pr-4 ${turn === Color.RED ? 'opacity-100 scale-105' : 'opacity-60'}`}>
+            <span className="text-sm font-bold text-[#8B0000] leading-none">我方</span>
+            <div className="flex items-center gap-1 mt-1">
+                {turn === Color.RED && !winner ? (
+                    <span className={`text-xs font-mono font-bold ${timeLeft < 20 ? 'text-red-600 animate-pulse' : 'text-[#8B0000]'}`}>
+                        {timeLeft}s
+                    </span>
+                ) : (
+                    <>
+                        {isPondering && <span className="text-[8px] animate-pulse">🧠 推演中</span>}
+                        <span className="text-[10px] text-[#8B0000]">等待中</span>
+                    </>
+                )}
+            </div>
+        </div>
+      </>
+  );
+
   if (isInitializing) {
       return (
           <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[#f0dbb0] text-[#5c4033] font-sans wood-texture z-50">
@@ -316,93 +354,70 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col items-center bg-[#f0dbb0] text-[#4a3b2a] font-sans pb-4 wood-texture">
-      {/* Header */}
-      <header className="w-full p-3 flex justify-between items-center bg-[#5c4033] text-[#f0dbb0] shadow-md z-30">
+    <div className="h-screen w-full flex flex-col bg-[#f0dbb0] text-[#4a3b2a] font-sans wood-texture overflow-hidden">
+      {/* 1. Compact Header */}
+      <header className="w-full h-12 shrink-0 flex justify-between items-center px-4 bg-[#5c4033] text-[#f0dbb0] shadow-md z-30">
         <button onClick={onBack} className="flex items-center space-x-1 hover:text-[#d4b483]">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
             </svg>
-            <span className="font-bold text-sm">退出</span>
         </button>
-        <div className="flex flex-col items-center">
-             <h1 className="text-lg font-bold tracking-wider">中国象棋</h1>
-             <span className="text-[10px] opacity-80">Gemini 3 Pro (Lv.10)</span>
-        </div>
-        <div className="w-10"></div>
+        <span className="text-sm font-bold tracking-wider">中国象棋</span>
+        <div className="w-5"></div>
       </header>
 
-      {/* Game Status & Timer */}
-      <div className="w-full max-w-[500px] p-4 flex flex-col items-center z-10">
-        <div className="w-full flex justify-between items-center bg-[#ebd4a9] p-2 rounded-lg border border-[#d4b483] shadow-inner">
-            {/* Player (Red) */}
-            <div className={`flex flex-col items-center transition-all ${turn === Color.RED ? 'scale-105' : 'opacity-70'}`}>
-                <div className="flex items-center space-x-2 bg-red-100 px-3 py-1 rounded-full border border-red-300">
-                    <span className="w-3 h-3 rounded-full bg-red-600 border border-white shadow-sm"></span>
-                    <span className="font-bold text-[#8B0000] text-sm">我方</span>
-                </div>
-                {turn === Color.RED && !winner && (
-                    <span className={`text-xs font-mono font-bold mt-1 ${timeLeft < 10 ? 'text-red-600 animate-pulse font-extrabold scale-110' : 'text-[#5c4033]'}`}>
-                        ⏳ {timeLeft}s
-                    </span>
-                )}
-            </div>
-            
-            <div className="font-bold text-xl text-[#5c4033] opacity-50">VS</div>
+      {/* 2. Controls Bar (Top) */}
+      <div className="w-full shrink-0 p-2 z-20 bg-[#f0dbb0]/50 backdrop-blur-sm border-b border-[#5c4033]/20">
+          <div className="grid grid-cols-3 gap-2 max-w-[400px] mx-auto">
+              <button 
+                onClick={handleUndo}
+                disabled={mode !== 'pve' || turn !== Color.RED || historyStack.length < 2 || !!winner}
+                className="bg-[#d4b483] text-[#5c4033] py-1.5 rounded shadow active:scale-95 disabled:opacity-50 text-xs font-bold border border-[#b08d55]"
+              >
+                  ↩️ 悔棋
+              </button>
+              <button 
+                onClick={handleDraw}
+                disabled={!!winner}
+                className="bg-[#d4b483] text-[#5c4033] py-1.5 rounded shadow active:scale-95 disabled:opacity-50 text-xs font-bold border border-[#b08d55]"
+              >
+                  🤝 求和
+              </button>
+              <button 
+                onClick={handleSurrender}
+                disabled={!!winner}
+                className="bg-[#e6a3a3] text-[#8B0000] py-1.5 rounded shadow active:scale-95 disabled:opacity-50 text-xs font-bold border border-[#c57878]"
+              >
+                  🏳️ 认输
+              </button>
+          </div>
+      </div>
 
-            {/* AI/Opponent (Black) */}
-            <div className={`flex flex-col items-center transition-all ${turn === Color.BLACK ? 'scale-105' : 'opacity-70'}`}>
-                <div className="flex items-center space-x-2 bg-gray-300 px-3 py-1 rounded-full border border-gray-400">
-                    <span className="w-3 h-3 rounded-full bg-black border border-white shadow-sm"></span>
-                    <span className="font-bold text-black text-sm">{mode === 'pve' ? 'Gemini' : '对方'}</span>
-                </div>
-                {turn === Color.BLACK && !winner && (
-                    <div className="flex flex-col items-center mt-1 min-h-[20px]">
-                        {isAiThinking ? (
-                            <div className="flex items-center gap-1">
-                                <span className="text-[10px] font-bold text-[#8B0000] animate-pulse">思考中</span>
-                                <div className="flex space-x-0.5">
-                                    <div className="w-1 h-1 bg-black rounded-full animate-bounce"></div>
-                                    <div className="w-1 h-1 bg-black rounded-full animate-bounce delay-75"></div>
-                                </div>
-                            </div>
-                        ) : (
-                            <span className="text-xs font-mono font-bold text-[#5c4033]">⏳ {timeLeft}s</span>
-                        )}
-                    </div>
-                )}
-                {/* 增加空闲时的思考状态展示 */}
-                {mode === 'pve' && turn === Color.RED && isPondering && (
-                    <span className="text-[8px] text-[#5c4033] opacity-60 animate-pulse mt-0.5">
-                        🧠 正在推演...
-                    </span>
-                )}
-            </div>
+      {/* 3. Board Area (Middle) */}
+      <div className="w-full shrink-0 px-1 py-2 z-10 flex justify-center bg-[#f0dbb0]">
+        <div className="w-full max-w-[420px]">
+            <Board 
+              board={board} 
+              selectedPos={selectedPos} 
+              validMoves={validMoves}
+              onSelect={handleSelect}
+              onMove={executeMove}
+              turn={turn}
+              riverContent={renderRiverHUD()} // Inject HUD here
+            />
         </div>
       </div>
 
-      {/* Winner Overlay */}
+      {/* 4. Winner Overlay (Absolute) */}
       {winner && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm px-4">
-          <div className="bg-[#f0dbb0] p-6 rounded-xl shadow-2xl border-4 border-[#5c4033] text-center w-full max-w-sm animate-bounce-in relative">
-             <div className="absolute -top-10 left-1/2 transform -translate-x-1/2">
-                {winner === Color.RED ? (
-                    <div className="text-6xl">🏆</div>
-                ) : winner === 'Draw' ? (
-                    <div className="text-6xl">🤝</div>
-                ) : (
-                    <div className="text-6xl">💀</div>
-                )}
-             </div>
-
-            <h2 className="text-2xl font-bold mt-8 mb-2 text-[#5c4033]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-8">
+          <div className="bg-[#f0dbb0] p-6 rounded-xl shadow-2xl border-4 border-[#5c4033] text-center w-full max-w-sm animate-bounce-in">
+             <div className="text-6xl mb-4">{winner === Color.RED ? '🏆' : (winner === 'Draw' ? '🤝' : '💀')}</div>
+            <h2 className="text-2xl font-bold mb-2 text-[#5c4033]">
               {winner === Color.RED ? "胜利!" : (winner === 'Draw' ? "和棋" : "失败")}
             </h2>
-            <p className="mb-4 text-sm font-bold opacity-80 break-words">
-               {resultMessage}
-            </p>
-            
-            <div className="flex flex-col space-y-3">
+            <p className="mb-6 text-sm opacity-80">{resultMessage}</p>
+            <div className="space-y-3">
                 <button 
                 onClick={() => {
                     setBoard(INITIAL_BOARD);
@@ -412,13 +427,13 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                     setWinner(null);
                     setTimeLeft(TURN_TIME_LIMIT);
                 }}
-                className="w-full bg-[#8B0000] text-white py-3 rounded-lg font-bold text-lg hover:bg-red-900 transition shadow-lg"
+                className="w-full bg-[#8B0000] text-white py-3 rounded-lg font-bold hover:bg-red-900"
                 >
                 再来一局
                 </button>
                 <button 
                 onClick={onBack}
-                className="w-full bg-[#5c4033] text-white py-3 rounded-lg font-bold text-lg hover:bg-[#3e2b22] transition shadow-lg"
+                className="w-full bg-[#5c4033] text-white py-3 rounded-lg font-bold"
                 >
                 返回大厅
                 </button>
@@ -427,93 +442,49 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
         </div>
       )}
 
-      {/* Board */}
-      <div className="w-full px-2 z-10 relative">
-        <Board 
-          board={board} 
-          selectedPos={selectedPos} 
-          validMoves={validMoves}
-          onSelect={handleSelect}
-          onMove={executeMove}
-          turn={turn}
-        />
-      </div>
-
-      {/* Controls Bar */}
-      <div className="w-full max-w-[500px] px-4 mt-4 grid grid-cols-3 gap-3 z-20">
-          <button 
-            onClick={handleUndo}
-            disabled={mode !== 'pve' || turn !== Color.RED || historyStack.length < 2 || !!winner}
-            className="bg-[#d4b483] text-[#5c4033] py-2 rounded-lg font-bold shadow border-b-4 border-[#b08d55] active:border-b-0 active:translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed flex flex-col items-center justify-center"
-          >
-              <span className="text-lg leading-none">↩️</span>
-              <span className="text-xs">悔棋</span>
-          </button>
-
-          <button 
-            onClick={handleDraw}
-            disabled={!!winner}
-            className="bg-[#d4b483] text-[#5c4033] py-2 rounded-lg font-bold shadow border-b-4 border-[#b08d55] active:border-b-0 active:translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed flex flex-col items-center justify-center"
-          >
-              <span className="text-lg leading-none">🤝</span>
-              <span className="text-xs">求和</span>
-          </button>
-
-          <button 
-            onClick={handleSurrender}
-            disabled={!!winner}
-            className="bg-[#e6a3a3] text-[#8B0000] py-2 rounded-lg font-bold shadow border-b-4 border-[#c57878] active:border-b-0 active:translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed flex flex-col items-center justify-center"
-          >
-              <span className="text-lg leading-none">🏳️</span>
-              <span className="text-xs">认输</span>
-          </button>
-      </div>
-
-      {/* AI Assistant */}
-      <div className="w-full max-w-[500px] mt-4 px-4 z-10 flex-1 min-h-[140px]">
-        <div className="h-full bg-white bg-opacity-70 rounded-xl border-2 border-[#5c4033]/30 p-3 shadow-lg flex flex-col relative overflow-hidden">
-           <div className="absolute top-0 left-0 bg-[#5c4033] text-[#f0dbb0] text-[10px] px-2 py-0.5 rounded-br-lg font-bold z-10 shadow-sm flex items-center gap-1">
-               <span>🧠 AI 军师</span>
-               {isSuggesting && <span className="animate-spin">⚙️</span>}
-           </div>
-
-           <div className="mt-4 flex flex-col gap-2 overflow-y-auto flex-1 pb-1">
+      {/* 5. AI Strategist (Bottom Fill) */}
+      <div className="flex-1 min-h-0 w-full flex flex-col bg-white/60 border-t-2 border-[#5c4033]/30 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] relative">
+        <div className="bg-[#5c4033] text-[#f0dbb0] text-xs font-bold px-3 py-1 flex justify-between items-center shadow-sm z-10">
+            <span className="flex items-center gap-1">🧠 军师锦囊 <span className="text-[10px] opacity-70 font-normal">(点击应用)</span></span>
+            {isSuggesting && <span className="animate-spin">⚙️</span>}
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-2 space-y-2 pb-safe-area">
               {turn === Color.BLACK ? (
-                  <div className="flex items-center justify-center h-full text-[#5c4033]/60 text-sm italic">
-                      等待对方走棋...
+                  <div className="flex items-center justify-center h-full text-[#5c4033]/50 text-sm italic">
+                      思考中...
                   </div>
               ) : isSuggesting ? (
-                  <div className="flex flex-col items-center justify-center h-full space-y-2">
+                  <div className="flex flex-col items-center justify-center h-full gap-2 opacity-60">
                       <div className="w-5 h-5 border-2 border-[#8B0000] border-t-transparent rounded-full animate-spin"></div>
-                      <span className="text-xs text-[#5c4033]">军师正在推演局势...</span>
+                      <span className="text-xs text-[#5c4033]">推演变化中...</span>
                   </div>
               ) : suggestions.length > 0 ? (
                   suggestions.map((sug, idx) => (
                       <div 
                         key={idx} 
                         onClick={() => handleSuggestionClick(sug.move)}
-                        className="flex items-center justify-between bg-[#f0dbb0]/50 hover:bg-[#d4b483]/50 p-2 rounded-lg border border-[#5c4033]/10 cursor-pointer transition-colors active:scale-[0.99]"
+                        className="flex items-center justify-between bg-[#f0dbb0]/80 p-2 rounded border border-[#5c4033]/10 active:bg-[#d4b483] active:scale-[0.99] transition-all cursor-pointer shadow-sm"
                       >
                           <div className="flex items-center gap-3">
-                              <span className={`font-bold font-mono text-sm px-1.5 py-0.5 rounded ${idx === 0 ? 'bg-[#8B0000] text-white' : 'bg-[#5c4033] text-white'}`}>
+                              <span className={`w-5 h-5 flex items-center justify-center font-bold font-mono text-xs rounded ${idx === 0 ? 'bg-[#8B0000] text-white' : 'bg-[#5c4033] text-white'}`}>
                                   {idx + 1}
                               </span>
                               <div className="flex flex-col">
-                                  <span className="text-[#8B0000] font-bold text-sm">{sug.notation}</span>
-                                  <span className="text-[10px] text-[#5c4033]">{sug.desc}</span>
+                                  <span className="text-[#8B0000] font-bold text-sm leading-tight">{sug.notation}</span>
+                                  <span className="text-[10px] text-[#5c4033] leading-tight mt-0.5">{sug.desc}</span>
                               </div>
                           </div>
-                          <div className="flex text-[10px] text-[#5c4033] opacity-60">
-                              推荐度 {Array(3-idx).fill('★').join('')}
+                          <div className="text-[10px] text-[#5c4033] font-mono opacity-50 bg-[#fff]/30 px-1 rounded">
+                              {sug.score}
                           </div>
                       </div>
                   ))
               ) : (
-                  <div className="flex items-center justify-center h-full text-[#5c4033]/60 text-sm">
+                  <div className="flex items-center justify-center h-full text-[#5c4033]/50 text-sm">
                       暂无建议
                   </div>
               )}
-           </div>
         </div>
       </div>
     </div>
