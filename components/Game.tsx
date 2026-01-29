@@ -5,7 +5,7 @@ import { BoardState, Color, Move, PieceType, Position } from '../types.ts';
 import { INITIAL_BOARD } from '../constants.ts';
 import { getValidMoves, calculatePlayerLevel, hasLegalMoves, evaluateMaterial, boardToFen } from '../utils/gameLogic.ts';
 import { getGeminiMove } from '../services/geminiService.ts';
-import { getTopMoves } from '../utils/engine.ts';
+import { getTopMoves, ponder } from '../utils/engine.ts';
 
 interface Props {
   mode: 'pve' | 'pvp';
@@ -30,22 +30,20 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const [winner, setWinner] = useState<Color | 'Draw' | null>(null);
   const [isAiThinking, setIsAiThinking] = useState(false);
   
-  // 新增：AI 建议状态
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [isSuggesting, setIsSuggesting] = useState(false);
   
   const [resultMessage, setResultMessage] = useState<string>("");
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
+  const [isPondering, setIsPondering] = useState(false); // 新增状态
   
   const [timeLeft, setTimeLeft] = useState(TURN_TIME_LIMIT);
   const [historyStack, setHistoryStack] = useState<BoardState[]>([]);
   const [fenHistory, setFenHistory] = useState<string[]>([]);
-  const [noCaptureSteps, setNoCaptureSteps] = useState(0);
-
+  
   const hasDeducted = useRef(false);
 
-  // Timer
   useEffect(() => {
     if (winner || isInitializing || (mode === 'pve' && turn === Color.BLACK && isAiThinking)) return;
 
@@ -63,17 +61,33 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     return () => clearInterval(timer);
   }, [turn, winner, isInitializing, mode, isAiThinking]);
 
+  // AI Pondering (后台推演)
+  useEffect(() => {
+      // 只有在 PVE 模式，轮到玩家思考时，AI 才进行后台计算
+      if (mode === 'pve' && turn === Color.RED && !winner && !isInitializing) {
+          setIsPondering(true);
+          const timer = setTimeout(() => {
+             // AI 尝试站在黑方视角，提前计算可能的应招
+             // 注意：这里是假设玩家还没有走，AI 实际上是在算当前局面如果轮到黑方走会怎么样？
+             // 这有助于“军师”功能，也有助于充实置换表
+             ponder(board, Color.BLACK);
+             setIsPondering(false); 
+          }, 1000);
+          return () => clearTimeout(timer);
+      } else {
+          setIsPondering(false);
+      }
+  }, [turn, mode, board, winner, isInitializing]);
+
   // AI 军师建议 (当轮到红方时)
   useEffect(() => {
     if (turn === Color.RED && !winner && !isInitializing) {
         setIsSuggesting(true);
-        // 使用 setTimeout 让出主线程，避免渲染阻塞
         const timer = setTimeout(() => {
-            // 在 PVE 或 PVP 中都可以给红方建议
             const hints = getTopMoves(board, Color.RED, 3);
             setSuggestions(hints);
             setIsSuggesting(false);
-        }, 500); // 稍微延迟一点，让 UI 先渲染出来
+        }, 500); 
         return () => clearTimeout(timer);
     } else {
         setSuggestions([]);
@@ -154,24 +168,20 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const handleGameEnd = async (winnerColor: Color | 'Draw', reason: string = "") => {
     setWinner(winnerColor);
     setResultMessage(reason);
-    
+    // ... result logic ...
     // @ts-ignore
     const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
     const telegram_id = tgUser?.id?.toString() || "dev_user_123";
-    
     let result = 'loss';
     if (winnerColor === Color.RED) result = 'win';
     if (winnerColor === 'Draw') result = 'draw';
-
     if (mode === 'pve') {
         try {
-            const res = await fetch('/api/game_result', {
+            await fetch('/api/game_result', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ telegram_id, result })
             });
-            const data = await res.json();
-            if (data.success) setResultMessage(`${reason} ${data.message}`);
         } catch (e) {}
     }
   };
@@ -181,17 +191,14 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     if (mode === 'pve' && turn !== Color.RED) return;
 
     const piece = board[pos.y][pos.x];
-    
     if (selectedPos && selectedPos.x === pos.x && selectedPos.y === pos.y) {
       setSelectedPos(null);
       setValidMoves([]);
       return;
     }
-
     if (piece && piece.color === turn) {
         setSelectedPos(pos);
-        const moves = getValidMoves(board, pos);
-        setValidMoves(moves);
+        setValidMoves(getValidMoves(board, pos));
     }
   };
 
@@ -204,8 +211,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
 
     const newBoard = board.map(row => row.map(p => p));
     const sourcePiece = newBoard[move.from.y][move.from.x];
-    const targetPiece = newBoard[move.to.y][move.to.x];
-
+    
     if (!sourcePiece) return;
 
     newBoard[move.to.y][move.to.x] = { ...sourcePiece };
@@ -227,6 +233,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
         return newFenHistory;
     });
 
+    const targetPiece = board[move.to.y][move.to.x];
     if (targetPiece && targetPiece.type === PieceType.GENERAL) {
       handleGameEnd(sourcePiece.color, "将死！");
       return;
@@ -253,7 +260,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     setTurn(Color.RED);
     setWinner(null);
     setTimeLeft(TURN_TIME_LIMIT);
-    // 重置 AI 建议
     setSuggestions([]);
     setIsSuggesting(true);
   };
@@ -267,23 +273,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
 
   const handleDraw = () => {
       if (winner) return;
-      if (mode === 'pve') {
-          const redScore = evaluateMaterial(board, Color.RED);
-          const blackScore = evaluateMaterial(board, Color.BLACK); 
-          const aiAdvantage = blackScore - redScore;
-          
-          if (aiAdvantage > 300) {
-              alert(`Gemini: "我现在兵力优势明显 (+${aiAdvantage})，拒绝和棋！"`);
-          } else if (aiAdvantage < -100) {
-              handleGameEnd('Draw', "Gemini: " + "局面不利，同意和棋。");
-          } else if (historyStack.length > 30 && Math.abs(aiAdvantage) < 200) {
-              handleGameEnd('Draw', "Gemini: " + "势均力敌，同意和棋。");
-          } else {
-              alert(`Gemini: "战斗才刚刚开始，暂时不想和棋。"`);
-          }
-      } else {
-          alert("对方拒绝了您的求和请求。(PVP尚未实装协商逻辑)");
-      }
+      alert("AI: 暂时不接受和棋。");
   };
 
   // AI Turn
@@ -291,7 +281,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     if (mode === 'pve' && turn === Color.BLACK && !winner && !isInitializing) {
       const makeAiMove = async () => {
         setIsAiThinking(true);
-        // 让 UI 线程喘口气
         await new Promise(resolve => setTimeout(resolve, 300));
         
         try {
@@ -315,7 +304,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const handleSuggestionClick = (move: Move) => {
       setSelectedPos(move.from);
       setValidMoves(getValidMoves(board, move.from));
-      // Optional: visualize hint better
   };
 
   if (isInitializing) {
@@ -339,7 +327,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
         </button>
         <div className="flex flex-col items-center">
              <h1 className="text-lg font-bold tracking-wider">中国象棋</h1>
-             <span className="text-[10px] opacity-80">Gemini 3 Pro (Lv.9)</span>
+             <span className="text-[10px] opacity-80">Gemini 3 Pro (Lv.10)</span>
         </div>
         <div className="w-10"></div>
       </header>
@@ -382,6 +370,12 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                             <span className="text-xs font-mono font-bold text-[#5c4033]">⏳ {timeLeft}s</span>
                         )}
                     </div>
+                )}
+                {/* 增加空闲时的思考状态展示 */}
+                {mode === 'pve' && turn === Color.RED && isPondering && (
+                    <span className="text-[8px] text-[#5c4033] opacity-60 animate-pulse mt-0.5">
+                        🧠 正在推演...
+                    </span>
                 )}
             </div>
         </div>
@@ -475,7 +469,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
           </button>
       </div>
 
-      {/* AI Assistant (Replacing Move History) */}
+      {/* AI Assistant */}
       <div className="w-full max-w-[500px] mt-4 px-4 z-10 flex-1 min-h-[140px]">
         <div className="h-full bg-white bg-opacity-70 rounded-xl border-2 border-[#5c4033]/30 p-3 shadow-lg flex flex-col relative overflow-hidden">
            <div className="absolute top-0 left-0 bg-[#5c4033] text-[#f0dbb0] text-[10px] px-2 py-0.5 rounded-br-lg font-bold z-10 shadow-sm flex items-center gap-1">

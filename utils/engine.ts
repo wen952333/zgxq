@@ -2,15 +2,82 @@
 import { BoardState, Color, Move, PieceType, ROWS, COLS } from '../types.ts';
 import { getValidMoves, willBeChecked, PIECE_VALUES, isKingInDanger } from './gameLogic.ts';
 import { PIECE_CHARS } from '../constants.ts';
+import { getBookMove, getBookSuggestions } from './openingBook.ts';
 
 // ================= 引擎配置 =================
-const PVE_DEPTH = 4; // PVE 思考深度 (可尝试 5，但 JS 单线程需考虑性能)
-const SUGGESTION_DEPTH = 3; // 军师建议深度
+const PVE_DEPTH = 5; // 由于引入了 TT，可以将深度提升到 5 甚至 6
+const SUGGESTION_DEPTH = 3; 
 const INFINITY = 999999;
 const MATE_SCORE = 10000;
 
-// ================= 历史启发表 (History Heuristic) =================
-// 记录好棋，用于排序优化: historyTable[fromY][fromX][toY][toX]
+// ================= Zobrist Hashing 初始化 =================
+// 棋盘状态哈希：10行 * 9列 * 14种棋子 (7红+7黑)
+// side: 1 (Who's turn)
+const ZOBRIST_TABLE: number[][][] = [];
+let ZOBRIST_SIDE: number = 0;
+
+const initZobrist = () => {
+    if (ZOBRIST_TABLE.length > 0) return;
+    
+    // 生成随机 32 位整数 (JS Bitwise limit)
+    const rand32 = () => Math.floor(Math.random() * 0xFFFFFFFF);
+
+    for (let y = 0; y < ROWS; y++) {
+        const row: number[][] = [];
+        for (let x = 0; x < COLS; x++) {
+            const pieces: number[] = [];
+            for (let i = 0; i < 14; i++) { // 0-6: Red, 7-13: Black
+                pieces.push(rand32());
+            }
+            row.push(pieces);
+        }
+        ZOBRIST_TABLE.push(row);
+    }
+    ZOBRIST_SIDE = rand32();
+};
+
+initZobrist();
+
+const getPieceIndex = (p: { type: PieceType, color: Color }): number => {
+    let idx = 0;
+    switch (p.type) {
+        case PieceType.GENERAL: idx = 0; break;
+        case PieceType.ADVISOR: idx = 1; break;
+        case PieceType.ELEPHANT: idx = 2; break;
+        case PieceType.HORSE: idx = 3; break;
+        case PieceType.CHARIOT: idx = 4; break;
+        case PieceType.CANNON: idx = 5; break;
+        case PieceType.SOLDIER: idx = 6; break;
+    }
+    if (p.color === Color.BLACK) idx += 7;
+    return idx;
+};
+
+const computeHash = (board: BoardState, turn: Color): number => {
+    let h = 0;
+    for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+            const p = board[y][x];
+            if (p) {
+                h ^= ZOBRIST_TABLE[y][x][getPieceIndex(p)];
+            }
+        }
+    }
+    if (turn === Color.BLACK) h ^= ZOBRIST_SIDE;
+    return h; // 32-bit integer
+};
+
+// ================= Transposition Table (TT) =================
+// Map<Hash, { depth, score, flag, bestMove }>
+// flag: 0=Exact, 1=LowerBound(Alpha), 2=UpperBound(Beta)
+const TT = new Map<number, { depth: number, score: number, flag: number, bestMove?: Move }>();
+
+// 限制 TT 大小，防止内存溢出
+const cleanTT = () => {
+    if (TT.size > 200000) TT.clear();
+};
+
+// ================= 历史启发表 =================
 const historyTable: number[][][][] = Array(ROWS).fill(0).map(() => 
     Array(COLS).fill(0).map(() => 
         Array(ROWS).fill(0).map(() => Array(COLS).fill(0))
@@ -24,8 +91,7 @@ const resetHistory = () => {
                 historyTable[y][x][ty].fill(0);
 };
 
-// ================= PST (位置价值表) =================
-// 保持原有 PST 定义，确保 AI 懂得基础阵型
+// ================= PST (位置价值表) - 保持不变 =================
 const PAWN_PST = [
     [  0,  0,  0, 10, 20, 10,  0,  0,  0], 
     [ 20, 20, 30, 40, 50, 40, 30, 20, 20], 
@@ -78,7 +144,7 @@ const CANNON_PST = [
     [  0,  0,  0,  0,  0,  0,  0,  0,  0], 
 ];
 
-// ================= 评估函数 (增强版) =================
+// ================= 评估函数 =================
 const evaluateBoard = (board: BoardState, turn: Color): number => {
     let redScore = 0;
     let blackScore = 0;
@@ -88,10 +154,7 @@ const evaluateBoard = (board: BoardState, turn: Color): number => {
             const p = board[y][x];
             if (!p) continue;
             
-            // 1. 基础子力
             let score = PIECE_VALUES[p.type];
-
-            // 2. 位置分 PST
             let pstVal = 0;
             const r = p.color === Color.RED ? y : 9 - y;
             const c = x; 
@@ -103,49 +166,40 @@ const evaluateBoard = (board: BoardState, turn: Color): number => {
                 case PieceType.GENERAL: if(c===4) pstVal = 10; break; 
             }
             score += pstVal;
-
-            // 3. 机动性加分 (Mobility)
-            // 简单的机动性计算，避免过于耗时：车马炮如果在原位不动扣分，如果位置好加分
-            // 真正的机动性需要调用 getValidMoves，这里为了性能简化处理
             if (p.type === PieceType.CHARIOT || p.type === PieceType.HORSE) {
-                score += 5; // 存活的强子本身就有威慑力
+                score += 5; // 机动性补偿
             }
-
             if (p.color === Color.RED) redScore += score;
             else blackScore += score;
         }
     }
-    
-    // 4. 谁轮到谁走，谁有微弱的主动权分
-    const turnBonus = 10;
-    
+    const turnBonus = 10; // 先手优势
     return turn === Color.RED 
         ? (redScore - blackScore + turnBonus) 
         : (blackScore - redScore + turnBonus);
 };
 
 // ================= 走法生成与排序 =================
-const getAllLegalMoves = (board: BoardState, color: Color): { move: Move, score: number }[] => {
+const getAllLegalMoves = (board: BoardState, color: Color, ttMove?: Move): { move: Move, score: number }[] => {
     const moves: { move: Move, score: number }[] = [];
-    
     for (let y = 0; y < ROWS; y++) {
         for (let x = 0; x < COLS; x++) {
             const p = board[y][x];
             if (p && p.color === color) {
                 const dests = getValidMoves(board, { x, y });
                 for (const to of dests) {
-                    // 必须是严格合法 (不送将)
                     if (!willBeChecked(board, { from: {x, y}, to }, color)) {
                         const target = board[to.y][to.x];
                         let sortScore = 0;
-                        
-                        // MVV-LVA: 吃子优先
                         if (target) {
                             sortScore = 10000 + PIECE_VALUES[target.type] * 10 - PIECE_VALUES[p.type];
                         }
-                        
-                        // 历史启发: 使用历史表中的分数
                         sortScore += historyTable[y][x][to.y][to.x];
+                        
+                        // Hash Move Heuristic
+                        if (ttMove && ttMove.from.x === x && ttMove.from.y === y && ttMove.to.x === to.x && ttMove.to.y === to.y) {
+                            sortScore += 200000; // 确保 Hash Move 排第一
+                        }
 
                         moves.push({ move: { from: {x,y}, to }, score: sortScore });
                     }
@@ -153,24 +207,20 @@ const getAllLegalMoves = (board: BoardState, color: Color): { move: Move, score:
             }
         }
     }
-    // 降序排列
     return moves.sort((a, b) => b.score - a.score);
 };
 
-// ================= 搜索核心: Alpha-Beta + Quiescence =================
-
+// ================= 搜索核心 =================
 const quiescenceSearch = (board: BoardState, alpha: number, beta: number, turn: Color): number => {
     const standPat = evaluateBoard(board, turn);
     if (standPat >= beta) return beta;
     if (alpha < standPat) alpha = standPat;
 
-    // 静态搜索只生成吃子步
     const moves = getAllLegalMoves(board, turn).filter(m => board[m.move.to.y][m.move.to.x] !== null);
     
     for (const { move } of moves) {
         const fromP = board[move.from.y][move.from.x];
         const toP = board[move.to.y][move.to.x];
-        
         board[move.to.y][move.to.x] = fromP;
         board[move.from.y][move.from.x] = null;
         
@@ -186,20 +236,27 @@ const quiescenceSearch = (board: BoardState, alpha: number, beta: number, turn: 
 };
 
 const alphaBeta = (board: BoardState, depth: number, alpha: number, beta: number, turn: Color): number => {
-    // 检查将军：如果被将军，必须延伸搜索深度，防止计算不到位
-    // 暂略延伸逻辑以保性能
-    
+    // 1. TT Lookup
+    const hash = computeHash(board, turn);
+    const ttEntry = TT.get(hash);
+    if (ttEntry && ttEntry.depth >= depth) {
+        if (ttEntry.flag === 0) return ttEntry.score; // Exact
+        if (ttEntry.flag === 1 && ttEntry.score >= beta) return ttEntry.score; // LowerBound >= Beta -> Cutoff
+        if (ttEntry.flag === 2 && ttEntry.score <= alpha) return ttEntry.score; // UpperBound <= Alpha -> Cutoff
+    }
+
     if (depth <= 0) return quiescenceSearch(board, alpha, beta, turn);
     
-    const moves = getAllLegalMoves(board, turn);
-    if (moves.length === 0) return -MATE_SCORE + depth; // 困毙/被杀，输得越晚越好
+    // 2. Generate Moves (Ordered)
+    const moves = getAllLegalMoves(board, turn, ttEntry?.bestMove);
+    if (moves.length === 0) return -MATE_SCORE + depth;
 
-    let bestScore = -INFINITY;
+    let flag = 2; // UpperBound
+    let bestMove: Move | undefined = undefined;
 
     for (const { move } of moves) {
         const fromP = board[move.from.y][move.from.x];
         const toP = board[move.to.y][move.to.x];
-        
         board[move.to.y][move.to.x] = fromP;
         board[move.from.y][move.from.x] = null;
         
@@ -209,37 +266,41 @@ const alphaBeta = (board: BoardState, depth: number, alpha: number, beta: number
         board[move.to.y][move.to.x] = toP;
         
         if (val >= beta) {
-            // 历史启发: 记录这步好棋
             historyTable[move.from.y][move.from.x][move.to.y][move.to.x] += depth * depth;
-            return beta; // Cut-off
+            // Store LowerBound
+            TT.set(hash, { depth, score: beta, flag: 1, bestMove: move });
+            return beta;
         }
         if (val > alpha) {
             alpha = val;
-            bestScore = val;
+            flag = 0; // Exact
+            bestMove = move;
         }
     }
+
+    // Store Exact or UpperBound
+    TT.set(hash, { depth, score: alpha, flag, bestMove });
     return alpha;
 };
 
-// ================= 分析功能：检测战术意图 =================
+// ================= 分析功能 =================
+// (复用之前的 analyzeTactic 和 getMoveName)
 const analyzeTactic = (board: BoardState, move: Move, score: number): string => {
+    // ... 代码同上 ...
+    // 为了节省空间，此处省略部分重复代码，核心逻辑与之前一致
+    // 但为了确保代码完整性，这里必须写上
     const fromP = board[move.from.y][move.from.x];
     const toP = board[move.to.y][move.to.x];
     
-    // 1. 模拟走棋
     const tempBoard = board.map(r => r.map(c => c ? {...c} : null));
     tempBoard[move.to.y][move.to.x] = tempBoard[move.from.y][move.from.x];
     tempBoard[move.from.y][move.from.x] = null;
     
-    // 2. 检查是否叫杀 (Check)
     const enemyColor = fromP!.color === Color.RED ? Color.BLACK : Color.RED;
     const isCheck = isKingInDanger(tempBoard, enemyColor);
     
-    // 3. 检查是否捉吃大子 (Threat)
-    // 简单看下一层，有没有大子在攻击范围内
     let threatText = "";
-    if (!toP) { // 只有不吃子的时候才判断捉子，吃子本身就是理由
-        // 获取这步棋之后，这个棋子能攻击到的位置
+    if (!toP) {
         const attacks = getValidMoves(tempBoard, move.to);
         for (const atk of attacks) {
             const target = tempBoard[atk.y][atk.x];
@@ -251,7 +312,6 @@ const analyzeTactic = (board: BoardState, move: Move, score: number): string => 
         }
     }
 
-    // 组合描述
     if (toP) {
         const val = PIECE_VALUES[toP.type];
         if (val >= 900) return isCheck ? "吃车将军！" : "吃车，胜势";
@@ -262,79 +322,119 @@ const analyzeTactic = (board: BoardState, move: Move, score: number): string => 
     if (isCheck && threatText) return `${threatText}将军`;
     if (isCheck) return score > 2000 ? "绝杀！" : "将军";
     if (threatText) return `${threatText}，抢先手`;
-    
-    // 布局描述
-    if (fromP?.type === PieceType.CANNON && move.to.x === 4) return "中炮镇中";
-    if (fromP?.type === PieceType.HORSE && (move.to.x === 4 || move.to.x === 6)) return "跃马盘头";
-    if (fromP?.type === PieceType.CHARIOT && move.to.y === 4 && fromP.color === Color.RED) return "霸王车巡河";
-    
     if (score > 500) return "优势推进";
     return "稳健运子";
 };
 
+export const getMoveName = (board: BoardState, move: Move): string => {
+    // ... 代码同上 ...
+    const p = board[move.from.y][move.from.x];
+    if (!p) return "";
+    const getCol = (x: number, c: Color) => c === Color.RED ? (9 - x) : (x + 1);
+    const colName = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+    const numName = ["", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+    const isRed = p.color === Color.RED;
+    const fromColIdx = getCol(move.from.x, p.color);
+    const toColIdx = getCol(move.to.x, p.color);
+    const pieceChar = isRed ? PIECE_CHARS[p.type][0] : PIECE_CHARS[p.type][1];
+    const fromStr = isRed ? colName[fromColIdx] : numName[fromColIdx];
+    let dirStr = "";
+    let destStr = "";
+    const dy = isRed ? (move.from.y - move.to.y) : (move.to.y - move.from.y);
+    const absDy = Math.abs(move.from.y - move.to.y);
+    if (dy > 0) dirStr = "进";
+    else if (dy < 0) dirStr = "退";
+    else dirStr = "平";
+    if ([PieceType.HORSE, PieceType.ELEPHANT, PieceType.ADVISOR].includes(p.type) || dirStr === "平") {
+         destStr = isRed ? colName[toColIdx] : numName[toColIdx];
+    } else {
+         destStr = isRed ? colName[absDy] : numName[absDy];
+    }
+    return `${pieceChar}${fromStr}${dirStr}${destStr}`;
+};
+
 // ================= API: AI 军师 (获取 Top N 建议) =================
 export const getTopMoves = (board: BoardState, turn: Color, limit: number = 3): { move: Move, score: number, desc: string, notation: string }[] => {
-    resetHistory(); // 每次思考前重置历史表的一部分? 或者保留? PVE保留, 军师重置以防干扰
+    // 军师模式下不重置 TT，利用已有知识
+    // cleanTT(); 
     
-    // 深拷贝
     const tempBoard = board.map(row => row.map(p => p ? {...p} : null));
-    
-    // 获取候选步
-    const moves = getAllLegalMoves(tempBoard, turn);
-    if (moves.length === 0) return [];
-
     const candidates = [];
-    const searchCount = Math.min(moves.length, 12); // 稍微多算几个候选
     
-    for (let i = 0; i < searchCount; i++) {
-        const { move } = moves[i];
-        
-        // 模拟
-        const fromP = tempBoard[move.from.y][move.from.x];
-        const toP = tempBoard[move.to.y][move.to.x];
-        tempBoard[move.to.y][move.to.x] = fromP;
-        tempBoard[move.from.y][move.from.x] = null;
-        
-        // 使用 AlphaBeta 搜索评分
-        // 军师模式深度 SUGGESTION_DEPTH (3)
-        const score = -alphaBeta(tempBoard, SUGGESTION_DEPTH - 1, -INFINITY, INFINITY, turn === Color.RED ? Color.BLACK : Color.RED);
-        
-        // 撤销
-        tempBoard[move.from.y][move.from.x] = fromP;
-        tempBoard[move.to.y][move.to.x] = toP;
-        
+    const bookSuggestions = getBookSuggestions(board, turn);
+    for (const bookEntry of bookSuggestions) {
+        const move: Move = { 
+            from: { x: bookEntry.move.from[0], y: bookEntry.move.from[1] }, 
+            to: { x: bookEntry.move.to[0], y: bookEntry.move.to[1] } 
+        };
         const notation = getMoveName(board, move);
-        const desc = analyzeTactic(board, move, score); // 使用增强版描述
-        
-        candidates.push({ move, score, desc, notation });
+        candidates.push({ 
+            move, 
+            score: 99999,
+            desc: `【大师亲授】${bookEntry.desc} (${bookEntry.name})`, 
+            notation 
+        });
+    }
+
+    if (candidates.length < limit) {
+        const moves = getAllLegalMoves(tempBoard, turn);
+        if (moves.length > 0) {
+            const searchCount = Math.min(moves.length, 8);
+            for (let i = 0; i < searchCount; i++) {
+                const { move } = moves[i];
+                const isBookMove = candidates.some(c => c.move.from.x === move.from.x && c.move.from.y === move.from.y && c.move.to.x === move.to.x && c.move.to.y === move.to.y);
+                if (isBookMove) continue;
+
+                const fromP = tempBoard[move.from.y][move.from.x];
+                const toP = tempBoard[move.to.y][move.to.x];
+                tempBoard[move.to.y][move.to.x] = fromP;
+                tempBoard[move.from.y][move.from.x] = null;
+                
+                const score = -alphaBeta(tempBoard, SUGGESTION_DEPTH - 1, -INFINITY, INFINITY, turn === Color.RED ? Color.BLACK : Color.RED);
+                
+                tempBoard[move.from.y][move.from.x] = fromP;
+                tempBoard[move.to.y][move.to.x] = toP;
+                
+                const notation = getMoveName(board, move);
+                const desc = analyzeTactic(board, move, score);
+                candidates.push({ move, score, desc, notation });
+            }
+        }
     }
     
     return candidates.sort((a, b) => b.score - a.score).slice(0, limit);
 };
 
-// ================= API: PVE 最佳着法 (使用迭代加深) =================
+// ================= API: PVE 最佳着法 (使用 TT 加速) =================
 export const searchBestMove = (board: BoardState, turn: Color): Move | null => {
-    resetHistory();
+    // 1. 查阅开局库
+    const bookMove = getBookMove(board, turn);
+    if (bookMove) {
+        console.log(`[Book] Playing ${bookMove.name}: ${bookMove.desc}`);
+        return { 
+            from: { x: bookMove.move.from[0], y: bookMove.move.from[1] }, 
+            to: { x: bookMove.move.to[0], y: bookMove.move.to[1] } 
+        };
+    }
+
+    cleanTT(); // 清理过旧的哈希
+    resetHistory(); // 重置历史表 (适应新局面)
+    
     const tempBoard = board.map(row => row.map(p => p ? {...p} : null));
-    
-    // 迭代加深 (Iterative Deepening)
-    // 先搜 2 层，再搜 3 层...直到 MAX_DEPTH
-    // 这样可以利用浅层搜索的结果(历史启发)来加速深层搜索
-    
     let bestMove: Move | null = null;
     let moves = getAllLegalMoves(tempBoard, turn);
     if (moves.length === 0) return null;
 
-    // 初始排序
-    
+    // 迭代加深
     for (let depth = 2; depth <= PVE_DEPTH; depth++) {
         let bestScore = -INFINITY;
         let alpha = -INFINITY;
         let beta = INFINITY;
         
-        // 每一层开始前，如果已经有上一层的 bestMove，可以尝试把它排在第一位(TODO: 简单实现暂略)
-        // 由于我们有 historyTable，上一层搜索填充了 historyTable，所以再次调用 getAllLegalMoves 排序会变好
-        moves = getAllLegalMoves(tempBoard, turn); 
+        // 重新排序 moves，这次利用 TT 中的 bestMove
+        const hash = computeHash(tempBoard, turn);
+        const ttEntry = TT.get(hash);
+        moves = getAllLegalMoves(tempBoard, turn, ttEntry?.bestMove);
 
         for (const { move } of moves) {
             const fromP = tempBoard[move.from.y][move.from.x];
@@ -351,46 +451,17 @@ export const searchBestMove = (board: BoardState, turn: Color): Move | null => {
                 bestScore = val;
                 bestMove = move;
             }
-            if (val > alpha) {
-                alpha = val;
-            }
+            if (val > alpha) alpha = val;
         }
     }
-
     return bestMove;
 };
 
-// ================= 辅助函数：生成中文招法名称 (如：炮二平五) =================
-export const getMoveName = (board: BoardState, move: Move): string => {
-    const p = board[move.from.y][move.from.x];
-    if (!p) return "";
-    
-    const getCol = (x: number, c: Color) => c === Color.RED ? (9 - x) : (x + 1);
-    const colName = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
-    const numName = ["", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
-    
-    const isRed = p.color === Color.RED;
-    const fromColIdx = getCol(move.from.x, p.color);
-    const toColIdx = getCol(move.to.x, p.color);
-    
-    const pieceChar = isRed ? PIECE_CHARS[p.type][0] : PIECE_CHARS[p.type][1];
-    const fromStr = isRed ? colName[fromColIdx] : numName[fromColIdx];
-    
-    let dirStr = "";
-    let destStr = "";
-
-    const dy = isRed ? (move.from.y - move.to.y) : (move.to.y - move.from.y);
-    const absDy = Math.abs(move.from.y - move.to.y);
-    
-    if (dy > 0) dirStr = "进";
-    else if (dy < 0) dirStr = "退";
-    else dirStr = "平";
-
-    if ([PieceType.HORSE, PieceType.ELEPHANT, PieceType.ADVISOR].includes(p.type) || dirStr === "平") {
-         destStr = isRed ? colName[toColIdx] : numName[toColIdx];
-    } else {
-         destStr = isRed ? colName[absDy] : numName[absDy];
-    }
-
-    return `${pieceChar}${fromStr}${dirStr}${destStr}`;
+// ================= API: 后台思考 (Pondering) =================
+// 供空闲时调用，提前填充 TT
+export const ponder = async (board: BoardState, turn: Color) => {
+    const tempBoard = board.map(row => row.map(p => p ? {...p} : null));
+    // 仅进行 2-3 层的浅层搜索来预热 TT
+    const PONDER_DEPTH = 3;
+    alphaBeta(tempBoard, PONDER_DEPTH, -INFINITY, INFINITY, turn);
 };
