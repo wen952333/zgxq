@@ -35,21 +35,37 @@ const boardToFen = (board: BoardState): string => {
     return fen + " b - - 0 1";
 };
 
+// 增强版棋盘可视化，带坐标轴，帮助 LLM 定位
 const boardToVisual = (board: BoardState): string => {
-  let str = "   0 1 2 3 4 5 6 7 8\n";
+  let str = "    0 1 2 3 4 5 6 7 8 (X-Axis)\n";
+  str +=    "   -------------------\n";
   for (let y = 0; y < ROWS; y++) {
-    str += `${y}  `;
+    str += `${y} | `;
     for (let x = 0; x < COLS; x++) {
       const p = board[y][x];
       if (!p) str += ". ";
       else {
-        const c = p.color === Color.RED ? 'R' : 'B';
-        const t = p.type.charAt(0).toUpperCase();
+        // R=Red (Enemy, Bottom), B=Black (Self, Top)
+        const c = p.color === Color.RED ? 'R' : 'B'; 
+        // K=King/General, A=Advisor, E=Elephant, H=Horse, R=Rook/Chariot, C=Cannon, P=Pawn
+        let t = '';
+        switch(p.type) {
+            case PieceType.GENERAL: t='K'; break;
+            case PieceType.ADVISOR: t='A'; break;
+            case PieceType.ELEPHANT: t='E'; break;
+            case PieceType.HORSE: t='H'; break;
+            case PieceType.CHARIOT: t='R'; break;
+            case PieceType.CANNON: t='C'; break;
+            case PieceType.SOLDIER: t='P'; break;
+        }
         str += `${c}${t}`;
       }
     }
+    str += ` | ${y}`;
     str += "\n";
   }
+  str +=    "   -------------------\n";
+  str += "    0 1 2 3 4 5 6 7 8 (X-Axis)\n";
   return str;
 };
 
@@ -68,6 +84,7 @@ const callBackendAI = async (endpoint: string, prompt: string, allMoves: { move:
         
         const data = await res.json();
         let text = data.text || "";
+        // 清理 markdown
         text = text.replace(/```json/g, '').replace(/```/g, '').trim();
         
         const jsonStart = text.indexOf('{');
@@ -90,8 +107,19 @@ const callBackendAI = async (endpoint: string, prompt: string, allMoves: { move:
 };
 
 export const getGeminiMove = async (board: BoardState): Promise<Move | null> => {
-  const allMoves: { move: Move, notation: string }[] = [];
+  const allMoves: { move: Move, notation: string, value: number }[] = [];
   
+  // 简单的价值估算，帮助 AI 识别吃子价值
+  const pieceValues: Record<string, number> = {
+      [PieceType.GENERAL]: 1000,
+      [PieceType.CHARIOT]: 9,
+      [PieceType.CANNON]: 4.5,
+      [PieceType.HORSE]: 4,
+      [PieceType.ELEPHANT]: 2,
+      [PieceType.ADVISOR]: 2,
+      [PieceType.SOLDIER]: 1
+  };
+
   for (let y = 0; y < ROWS; y++) {
     for (let x = 0; x < COLS; x++) {
       const p = board[y][x];
@@ -99,9 +127,16 @@ export const getGeminiMove = async (board: BoardState): Promise<Move | null> => 
         const validDests = getValidMoves(board, { x, y });
         validDests.forEach(to => {
           const target = board[to.y][to.x];
+          let notation = `${p.type.toUpperCase()} (${x},${y}) -> (${to.x},${to.y})`;
+          let val = 0;
+          if (target) {
+              val = pieceValues[target.type] || 0;
+              notation += ` [CAPTURES ${target.type.toUpperCase()} Val=${val}]`;
+          }
           allMoves.push({
             move: { from: { x, y }, to },
-            notation: `Index ${allMoves.length}: ${p.type} (${x},${y}) -> (${to.x},${to.y})${target ? ' 吃 '+target.type : ''}`
+            notation: `Index ${allMoves.length}: ${notation}`,
+            value: val
           });
         });
       }
@@ -110,45 +145,50 @@ export const getGeminiMove = async (board: BoardState): Promise<Move | null> => 
 
   if (allMoves.length === 0) return null;
 
+  // 强化版 Prompt
   const prompt = `
-    Role: You are an Elite Xiangqi Grandmaster. You play BLACK.
-    
-    Current State (FEN): ${boardToFen(board)}
-    
-    Visual Representation:
-    ${boardToVisual(board)}
+    Role: You are an Elite Xiangqi (Chinese Chess) Engine playing BLACK.
+    Red (Opponent) is at the bottom (Rows 5-9). Black (You) is at the top (Rows 0-4).
 
-    Legal Moves for Black:
+    **Current Board (FEN):** ${boardToFen(board)}
+    
+    **Visual Map:**
+    ${boardToVisual(board)}
+    (RK=Red King, BK=Black King, RR=Red Rook, BR=Black Rook, etc.)
+
+    **Candidate Moves for Black:**
     ${allMoves.map(m => m.notation).join('\n')}
 
-    Strategy Guide:
-    1. Checkmate Red immediately if possible.
-    2. Protect the General at all costs.
-    3. Look for tactical opportunities (Fork, Pin, Discovered attack).
-    4. Control the center and the river.
-    5. Value Chariot(9) > Cannon(4.5) > Horse(4).
+    **Critical Thinking Process:**
+    1. **Safety Check:** Is the Black General (BK) in Check? Can it be killed? If so, you MUST save it.
+    2. **Tactical Blunders:** Do NOT move a piece to a square where it will be captured for free, unless it's a sacrifice for Checkmate.
+    3. **Attack:** Look for Checkmate opportunities.
+    4. **Material:** 
+       - Chariot/Rook (Value 9) is the strongest. Don't lose it!
+       - Cannon (4.5) & Horse (4) are key attackers.
+       - Do not trade a Chariot for a Soldier.
+    5. **Evaluation:** Select the move index that maximizes Black's advantage.
 
-    Task:
-    Analyze the board and select the absolute best move. 
-    Explain your reasoning briefly then provide the index.
-
-    Output JSON:
+    Output STRICT JSON:
     {
-      "reasoning": "...",
-      "bestMoveIndex": <integer>
+      "reasoning": "Step-by-step analysis of threats and best response...",
+      "bestMoveIndex": <integer_from_candidate_list>
     }
   `;
 
   const move = await callBackendAI('/api/gemini', prompt, allMoves);
   if (move) return move;
 
-  // 极简启发式兜底
+  // 改进的启发式兜底：优先吃高价值子，其次靠近中路
   let best = allMoves[0].move;
-  let maxScore = -1;
-  const val: any = { chariot: 10, cannon: 5, horse: 5, advisor: 2, elephant: 2, soldier: 1 };
+  let maxScore = -100;
+  
   allMoves.forEach(m => {
-    const target = board[m.move.to.y][m.move.to.x];
-    const score = target ? val[target.type] : 0;
+    let score = m.value * 10; // 吃子价值权重最高
+    // 简单的位置加分：过河卒、中路炮/车
+    if (m.move.to.y > 4) score += 1; // 进攻红方半场
+    if (m.move.to.x >= 3 && m.move.to.x <= 5) score += 0.5; // 控制中路
+    
     if (score > maxScore) {
       maxScore = score;
       best = m.move;
