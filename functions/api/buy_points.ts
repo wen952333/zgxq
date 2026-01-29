@@ -33,6 +33,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     if (context.env.BOT_TOKEN && context.env.ADMIN_CHAT_ID) {
         const adminMsg = `💰 <b>新充值提醒</b>\n\n用户: ${user.username} (ID: ${telegram_id})\n支付: ${stars} ⭐\n获得: ${pointsToAdd} 积分\n当前总积分: ${newPoints}`;
         
+        // Fire and forget notification to avoid blocking the response
         context.waitUntil(
             fetch(`https://api.telegram.org/bot${context.env.BOT_TOKEN}/sendMessage`, {
                 method: "POST",

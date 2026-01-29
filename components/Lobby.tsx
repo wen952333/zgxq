@@ -26,12 +26,14 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
       botAppUrl: DEFAULT_TELEGRAM_BOT_APP_URL
   });
 
+  // 获取 Telegram WebApp 对象
+  // @ts-ignore
+  const WebApp = window.Telegram?.WebApp;
+
   const initUser = async () => {
       setLoading(true);
       setErrorMsg(null);
 
-      // @ts-ignore
-      const WebApp = window.Telegram?.WebApp;
       WebApp?.ready();
       WebApp?.expand();
 
@@ -40,27 +42,24 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
       const username = tgUser?.username || "DevPlayer";
 
       try {
-        // 使用 try-catch 包装 fetch，防止 404 或网络错误阻断应用
         const [userRes, configRes] = await Promise.all([
              fetch(`/api/user?telegram_id=${telegram_id}&username=${username}`).catch(() => ({ ok: false, status: 404 } as Response)),
-             fetch('/api/config').catch(() => ({ ok: false } as any))
+             fetch('/api/config').catch(() => ({ ok: false, json: () => Promise.resolve({}) } as any))
         ]);
 
         if (userRes.ok) {
           const userData = await userRes.json();
           setUser(userData);
         } else {
-          // ================= 核心修复：404 容错 (访客模式) =================
-          console.warn(`API 返回 ${userRes.status}，启用访客模式`);
+          console.warn(`API 初始化失败 (${userRes.status})，进入本地/访客模式`);
           setUser({
             id: 0,
             telegram_id: telegram_id,
             username: `${username} (访客)`,
-            points: 1000 // 赋予初始积分以便测试
+            points: 1000 
           });
-          
           if (userRes.status !== 404) {
-            WebApp?.showAlert?.(`服务器连接异常 (${userRes.status})，已切换至访客模式。`);
+            WebApp?.showAlert?.(`服务器连接不稳定 (${userRes.status})，已启用访客模式。在线对弈功能可能受限。`);
           }
         }
 
@@ -72,7 +71,7 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
             });
         }
       } catch (error: any) {
-        console.error("Init Error:", error);
+        console.error("Initialization error:", error);
         setUser({ id: 0, telegram_id, username, points: 500 });
       } finally {
         setLoading(false);
@@ -84,8 +83,6 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
   }, []);
 
   const safeAlert = (msg: string) => {
-      // @ts-ignore
-      const WebApp = window.Telegram?.WebApp;
       if (WebApp?.showAlert) {
          WebApp.showAlert(msg);
       } else {
@@ -96,15 +93,12 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
   const handleConfirmBuy = async () => {
     const starsToBuy = parseInt(buyAmount);
     if (!starsToBuy || starsToBuy <= 0) {
-        safeAlert("请输入有效的星星数量");
+        safeAlert("请输入有效的星星数量（正整数）。");
         return;
     }
     
     if (isBuying) return;
     setIsBuying(true);
-    
-    // @ts-ignore
-    const WebApp = window.Telegram?.WebApp;
 
     try {
         const invoiceRes = await fetch('/api/create_invoice', {
@@ -116,7 +110,7 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
         const invoiceData = await invoiceRes.json();
         
         if (!invoiceData.success) {
-            safeAlert("创建订单失败: " + (invoiceData.error || "未知错误"));
+            safeAlert(`订单创建失败: ${invoiceData.error || "机器人 Token 配置可能存在问题。"}`);
             setIsBuying(false);
             return;
         }
@@ -124,38 +118,45 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
         const invoiceLink = invoiceData.invoice_link;
         setShowBuyModal(false);
 
-        // 调用原生支付控件
-        WebApp.openInvoice(invoiceLink, async (status: string) => {
-            setIsBuying(false);
-            if (status === 'paid') {
-                const creditRes = await fetch('/api/buy_points', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ telegram_id: user!.telegram_id, stars: starsToBuy })
-                });
-                const creditData = await creditRes.json();
-                if (creditData.success) {
-                    setUser(prev => prev ? { ...prev, points: creditData.points } : null);
-                    safeAlert(`支付成功！已充值 ${starsToBuy * 500} 积分。`);
-                }
-            } else if (status === 'failed') {
-                // ================= 核心修复：支付失败明确提示并降级 =================
-                safeAlert("原生支付控件调起失败。请尝试点击链接手动支付。");
-                setTimeout(() => {
+        // 核心支付逻辑：调起原生支付控件
+        if (WebApp?.openInvoice) {
+            WebApp.openInvoice(invoiceLink, async (status: string) => {
+                setIsBuying(false);
+                console.log("Payment status updated:", status);
+                
+                if (status === 'paid') {
+                    safeAlert("✅ 支付请求已成功！\n系统正在处理积分到账，请在 3-5 秒后刷新账户余额。");
+                    // 自动刷新一次
+                    setTimeout(initUser, 3500);
+                } else if (status === 'failed' || status === 'error') {
+                    safeAlert("⚠️ 原生支付组件未能成功响应。\n\n这可能是由于网络波动或机器人配置导致。请点击下方“手动重试”尝试直接在聊天界面中支付。");
+                    // 提供手动打开链接的备选方案
                     WebApp.openTelegramLink(invoiceLink);
-                }, 800);
+                } else if (status === 'cancelled') {
+                    // 用户取消，无需提示
+                } else {
+                    console.log("Unknown payment status:", status);
+                }
+            });
+        } else {
+            // 环境不支持 openInvoice，直接尝试跳转
+            // Fix: Expression of type 'void' cannot be tested for truthiness
+            if (WebApp?.openTelegramLink) {
+                WebApp.openTelegramLink(invoiceLink);
+            } else {
+                window.open(invoiceLink, '_blank');
             }
-        });
+            setIsBuying(false);
+        }
 
     } catch (e) {
-        safeAlert("支付系统通信异常");
+        safeAlert("网络异常，无法连接支付服务器。");
         setIsBuying(false);
     }
   };
 
-  // 其余逻辑保持不变...
   const handleSignIn = async () => {
-    if (!user || user.id === 0) { safeAlert("访客模式无法签到，请确保网络正常。"); return; }
+    if (!user || user.id === 0) { safeAlert("访客模式不支持签到。"); return; }
     if (isSigningIn) return;
     setIsSigningIn(true);
     try {
@@ -169,90 +170,127 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
           setUser(prev => prev ? { ...prev, points: data.points } : null);
           safeAlert(data.message);
       } else {
-          safeAlert(data.message || "签到失败");
+          safeAlert(data.message || "今日签到已领过。");
       }
-    } catch (e) { safeAlert("网络错误"); } finally { setIsSigningIn(false); }
+    } catch (e) { safeAlert("签到失败，请稍后再试。"); } finally { setIsSigningIn(false); }
   };
 
   const handleJoinGroup = () => {
-    const url = config.groupUrl;
-    // @ts-ignore
-    const WebApp = window.Telegram?.WebApp;
-    WebApp?.openTelegramLink ? WebApp.openTelegramLink(url) : window.open(url, '_blank');
+    WebApp?.openTelegramLink ? WebApp.openTelegramLink(config.groupUrl) : window.open(config.groupUrl, '_blank');
   };
 
   if (loading) return (
     <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[#f0dbb0] wood-texture">
-        <div className="w-12 h-12 border-4 border-[#8B0000] border-t-transparent rounded-full animate-spin mb-4"></div>
-        <p className="font-bold text-[#5c4033]">正在连接大厅...</p>
+        <div className="w-16 h-16 border-4 border-[#8B0000] border-t-transparent rounded-full animate-spin mb-4"></div>
+        <p className="font-bold text-[#5c4033] animate-pulse">正在进入博弈大厅...</p>
     </div>
   );
 
   return (
-    <div className="min-h-screen w-full flex flex-col bg-[#f0dbb0] text-[#4a3b2a] font-sans wood-texture relative">
-      <div className="w-full p-4 flex justify-between items-start">
-        <button onClick={handleSignIn} className="flex flex-col items-center space-y-1">
-          <div className="w-10 h-10 bg-[#8B0000] rounded-full flex items-center justify-center text-white shadow-lg border-2 border-[#d4b483]">
-            {isSigningIn ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : "签"}
+    <div className="min-h-screen w-full flex flex-col bg-[#f0dbb0] text-[#4a3b2a] font-sans wood-texture relative overflow-hidden">
+      {/* 顶部交互区 */}
+      <div className="w-full p-4 flex justify-between items-start z-20">
+        <button onClick={handleSignIn} className="flex flex-col items-center space-y-1 transition active:scale-90">
+          <div className="w-12 h-12 bg-gradient-to-b from-[#8B0000] to-[#600000] rounded-full flex items-center justify-center text-white shadow-xl border-2 border-[#d4b483]">
+            {isSigningIn ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <span className="text-xl font-bold">签</span>}
           </div>
-          <span className="text-xs font-bold">签到</span>
+          <span className="text-[10px] font-bold text-[#5c4033]">每日领分</span>
         </button>
 
         <div className="flex flex-col items-center">
-            <div className="bg-[#8B0000] text-white text-[10px] px-2 py-0.5 rounded-t-lg border-x border-t border-[#d4b483]">
+            <div className="bg-[#8B0000] text-white text-[10px] px-3 py-1 rounded-t-lg border-x border-t border-[#d4b483] font-bold shadow-md">
                 {user?.id === 0 ? '访客模式' : `Lv.${Math.floor((user?.points||0)/1000)} 棋士`}
             </div>
-            <div className="flex items-center bg-[#5c4033] rounded-full p-1 pr-1 gap-2 border border-[#8B0000]">
-                <div className="flex items-center space-x-1 px-2">
-                    <span className="text-yellow-400">🪙</span>
-                    <span className="text-[#d4b483] font-bold text-sm">{user?.points || 0}</span>
+            <div className="flex items-center bg-[#5c4033] rounded-full p-1 pr-1 gap-2 border-2 border-[#8B0000] shadow-lg">
+                <div className="flex items-center space-x-1 px-3">
+                    <span className="text-yellow-400 drop-shadow-sm">🪙</span>
+                    <span className="text-[#d4b483] font-bold text-base min-w-[40px] text-center">{user?.points || 0}</span>
                 </div>
-                <button onClick={() => user?.id !== 0 && setShowBuyModal(true)} className="bg-[#d4b483] text-[#5c4033] rounded-full w-6 h-6 flex items-center justify-center font-bold">+</button>
+                <button onClick={() => user?.id !== 0 && setShowBuyModal(true)} className="bg-[#d4b483] text-[#5c4033] rounded-full w-7 h-7 flex items-center justify-center font-bold shadow-inner active:scale-110 transition">+</button>
             </div>
         </div>
 
-        <button onClick={handleJoinGroup} className="flex flex-col items-center space-y-1">
-          <div className="w-10 h-10 bg-[#4a6b8a] rounded-full flex items-center justify-center text-white shadow-lg border-2 border-[#d4b483]">群</div>
-          <span className="text-xs font-bold">棋友群</span>
+        <button onClick={handleJoinGroup} className="flex flex-col items-center space-y-1 transition active:scale-90">
+          <div className="w-12 h-12 bg-gradient-to-b from-[#4a6b8a] to-[#2c4052] rounded-full flex items-center justify-center text-white shadow-xl border-2 border-[#d4b483]">
+             <span className="text-sm">社区</span>
+          </div>
+          <span className="text-[10px] font-bold text-[#5c4033]">联系棋友</span>
         </button>
       </div>
 
-      <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-8">
-        <div className="text-center">
-            <h1 className="text-5xl font-extrabold text-[#5c4033] tracking-widest font-serif drop-shadow-md">中国象棋</h1>
-            <p className="text-[#8B0000] mt-2 font-semibold italic">-- Gemini 3 Pro AI 驱动 --</p>
+      {/* 主标题与模式选择 */}
+      <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-10 z-10">
+        <div className="text-center space-y-2">
+            <h1 className="text-6xl font-extrabold text-[#5c4033] tracking-widest font-serif drop-shadow-lg animate-fade-in">中国象棋</h1>
+            <div className="h-1 w-32 bg-[#8B0000] mx-auto rounded-full"></div>
+            <p className="text-[#8B0000] font-bold italic opacity-90 text-sm">-- Powered by Gemini 3 Pro --</p>
         </div>
 
-        <div className="w-full max-w-sm space-y-5">
-            <button onClick={() => user?.points! >= 30 ? onStartGame('pve') : safeAlert("积分不足 30")} className="w-full bg-gradient-to-r from-[#8B0000] to-[#a52a2a] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between border-2 border-[#5c4033]">
-                <div className="text-left"><span className="text-2xl font-bold block">人机对战</span><span className="text-xs opacity-80">挑战最强 AI 大师</span></div>
-                <div className="text-3xl">🤖</div>
+        <div className="w-full max-w-sm space-y-6">
+            <button 
+              onClick={() => user?.points! >= 30 ? onStartGame('pve') : safeAlert("您的积分不足 30（当前：" + user?.points + "），请先签到或充值。")} 
+              className="w-full bg-gradient-to-br from-[#8B0000] to-[#600000] text-[#f0dbb0] p-6 rounded-3xl shadow-2xl flex items-center justify-between border-2 border-[#5c4033] hover:brightness-110 active:scale-95 transition-all"
+            >
+                <div className="text-left">
+                  <span className="text-2xl font-black block tracking-wide">人机对战</span>
+                  <span className="text-xs opacity-75 mt-1 block">挑战国手级 AI 引擎 (30分/局)</span>
+                </div>
+                <div className="text-5xl animate-pulse">🤖</div>
             </button>
 
-            <button disabled={user?.id === 0} onClick={() => setShowPvPModal(true)} className={`w-full bg-gradient-to-r from-[#5c4033] to-[#6d4c41] text-[#f0dbb0] p-6 rounded-2xl shadow-xl flex items-center justify-between border-2 border-[#3e2723] ${user?.id === 0 ? 'opacity-50' : ''}`}>
-                <div className="text-left"><span className="text-2xl font-bold block">棋友约战</span><span className="text-xs opacity-80">邀请好友 实时对弈</span></div>
-                <div className="text-3xl">⚔️</div>
+            <button 
+              disabled={user?.id === 0} 
+              onClick={() => safeAlert("棋友在线约战功能正在紧锣密鼓内测中，敬请期待！")} 
+              className={`w-full bg-gradient-to-br from-[#5c4033] to-[#3e2b22] text-[#f0dbb0] p-6 rounded-3xl shadow-2xl flex items-center justify-between border-2 border-[#2c1d17] hover:brightness-110 active:scale-95 transition-all ${user?.id === 0 ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}
+            >
+                <div className="text-left">
+                  <span className="text-2xl font-black block tracking-wide">好友对弈</span>
+                  <span className="text-xs opacity-75 mt-1 block">邀请好友 实时在线博弈</span>
+                </div>
+                <div className="text-5xl">⚔️</div>
             </button>
         </div>
       </div>
 
+      {/* 充值弹窗 */}
       {showBuyModal && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-            <div className="bg-[#f0dbb0] w-full max-w-sm rounded-xl border-4 border-[#5c4033] p-6 relative">
-                <button onClick={() => setShowBuyModal(false)} className="absolute top-2 right-2 p-1">✕</button>
-                <h2 className="text-xl font-bold text-center border-b border-[#5c4033] pb-2 mb-4">购买积分</h2>
-                <div className="space-y-4">
-                    <div className="flex flex-col space-y-1">
-                        <label className="text-sm font-bold">星星数量 (1⭐ = 500积分)</label>
-                        <input type="number" value={buyAmount} onChange={(e) => setBuyAmount(e.target.value)} className="w-full p-2 rounded border-2 border-[#5c4033] font-mono" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-in fade-in duration-300">
+            <div className="bg-[#f0dbb0] w-full max-w-sm rounded-3xl border-4 border-[#5c4033] p-8 relative shadow-2xl animate-in zoom-in duration-200">
+                <button onClick={() => setShowBuyModal(false)} className="absolute top-4 right-4 p-2 hover:bg-black/10 rounded-full transition">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+                <h2 className="text-3xl font-black text-center text-[#5c4033] border-b-2 border-[#5c4033] pb-4 mb-6">积分充值</h2>
+                <div className="space-y-6">
+                    <div className="flex flex-col space-y-2">
+                        <label className="text-sm font-black text-[#5c4033] ml-1">充值 Stars 数量 (1⭐ = 500积分)</label>
+                        <input 
+                          type="number" 
+                          min="1" 
+                          value={buyAmount} 
+                          onChange={(e) => setBuyAmount(e.target.value)} 
+                          className="w-full p-4 rounded-2xl border-2 border-[#5c4033] font-mono text-xl focus:outline-none focus:ring-4 ring-[#8B0000]/20 bg-white/50" 
+                        />
                     </div>
-                    <button onClick={handleConfirmBuy} disabled={isBuying} className="w-full bg-[#8B0000] text-white py-3 rounded-lg font-bold shadow-lg">
-                        {isBuying ? "正在调起支付..." : `支付 ${buyAmount} 星星`}
+                    <div className="p-4 bg-[#5c4033]/5 rounded-2xl border border-[#5c4033]/10">
+                        <p className="text-sm text-center">您将获得：<span className="text-2xl font-black text-[#8B0000]">{(parseInt(buyAmount)||0)*500}</span> 积分</p>
+                    </div>
+                    <button 
+                      onClick={handleConfirmBuy} 
+                      disabled={isBuying} 
+                      className="w-full bg-gradient-to-r from-[#8B0000] to-[#600000] text-white py-5 rounded-2xl font-black text-xl shadow-xl active:scale-95 transition flex items-center justify-center gap-3 disabled:opacity-70"
+                    >
+                        {isBuying ? <div className="w-6 h-6 border-4 border-white border-t-transparent rounded-full animate-spin"></div> : "立即支付"}
                     </button>
+                    <p className="text-center text-[10px] text-[#5c4033] opacity-60">充值通过 Telegram Stars 安全处理</p>
                 </div>
             </div>
         </div>
       )}
+
+      {/* 底部纹理装饰 */}
+      <div className="absolute bottom-0 left-0 right-0 h-2 bg-[#8B0000] opacity-30"></div>
     </div>
   );
 };

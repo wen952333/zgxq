@@ -7,8 +7,8 @@ interface Env {
 
 export const onRequest: PagesFunction<Env> = async (context) => {
   try {
-    // Create the users table if it doesn't exist
-    await context.env.DB.exec(`
+    // Create the users table
+    await context.env.DB.prepare(`
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         telegram_id TEXT UNIQUE,
@@ -16,11 +16,11 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         points INTEGER DEFAULT 0,
         last_signin INTEGER DEFAULT 0,
         created_at INTEGER
-      );
-    `);
+      )
+    `).run();
 
-    // Create games table for matchmaking
-    const result = await context.env.DB.exec(`
+    // Create games table
+    await context.env.DB.prepare(`
       CREATE TABLE IF NOT EXISTS games (
         id TEXT PRIMARY KEY,
         creator_id TEXT,
@@ -28,12 +28,11 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         min_level INTEGER DEFAULT 0,
         status TEXT DEFAULT 'waiting', -- waiting, active, finished
         created_at INTEGER
-      );
-    `);
+      )
+    `).run();
 
     return new Response(JSON.stringify({ 
-      message: "Database initialized successfully.", 
-      details: result 
+      message: "Database initialized successfully (using run)." 
     }), {
       headers: { "Content-Type": "application/json" }
     });

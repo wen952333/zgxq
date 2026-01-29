@@ -29,15 +29,15 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       return new Response(JSON.stringify({ success: false, message: "今天已经签到过了", points: user.points }), { status: 200 });
     }
 
-    // Add points (e.g., 100) and update time
-    const newPoints = (user.points || 0) + 100;
+    // Add 50 points and update time
+    const newPoints = (user.points || 0) + 50;
     const timestamp = now.getTime();
 
     await context.env.DB.prepare("UPDATE users SET points = ?, last_signin = ? WHERE telegram_id = ?")
       .bind(newPoints, timestamp, telegram_id)
       .run();
 
-    return new Response(JSON.stringify({ success: true, message: "签到成功！获得 100 积分", points: newPoints }), {
+    return new Response(JSON.stringify({ success: true, message: "签到成功！获得 50 积分", points: newPoints }), {
       headers: { "Content-Type": "application/json" }
     });
 

@@ -37,6 +37,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     const errStr = String(e.message || e);
     
     // 3. Handle "no such table" error by creating table and retrying
+    // We use prepare().run() instead of exec() to avoid the "duration" crash bug in Cloudflare D1 shim
     if (errStr.includes("no such table")) {
       try {
         await context.env.DB.prepare(`
@@ -67,7 +68,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     }
 
     // Return detailed error for debugging
-    return new Response(JSON.stringify({ error: e.message }), { 
+    return new Response(JSON.stringify({ error: e.message, stack: e.stack }), { 
         status: 500,
         headers: { "Content-Type": "application/json" }
     });
