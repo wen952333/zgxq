@@ -2,6 +2,32 @@
 import { BoardState, Color, Move, ROWS, COLS, PieceType } from '../types.ts';
 import { getValidMoves } from '../utils/gameLogic.ts';
 
+// 棋子价值表 (用于评估和排序)
+const PIECE_VALUES: Record<string, number> = {
+    [PieceType.GENERAL]: 10000,
+    [PieceType.CHARIOT]: 900,
+    [PieceType.CANNON]: 450,
+    [PieceType.HORSE]: 400,
+    [PieceType.ELEPHANT]: 200,
+    [PieceType.ADVISOR]: 200,
+    [PieceType.SOLDIER]: 100
+};
+
+// 辅助函数：计算一方的总兵力
+const calculateMaterial = (board: BoardState, color: Color): number => {
+    let score = 0;
+    for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+            const p = board[y][x];
+            if (p && p.color === color) {
+                score += PIECE_VALUES[p.type] || 0;
+            }
+        }
+    }
+    return score;
+};
+
+// 转换 FEN 串
 const boardToFen = (board: BoardState): string => {
     let fen = "";
     for (let y = 0; y < ROWS; y++) {
@@ -35,37 +61,39 @@ const boardToFen = (board: BoardState): string => {
     return fen + " b - - 0 1";
 };
 
-// 增强版棋盘可视化，带坐标轴，帮助 LLM 定位
+// 增强版可视化棋盘 (带坐标和河界)
 const boardToVisual = (board: BoardState): string => {
-  let str = "    0 1 2 3 4 5 6 7 8 (X-Axis)\n";
-  str +=    "   -------------------\n";
+  let str = "     0   1   2   3   4   5   6   7   8   (X)\n";
+  str +=    "   +---+---+---+---+---+---+---+---+---+\n";
   for (let y = 0; y < ROWS; y++) {
-    str += `${y} | `;
+    str += `${y}  |`;
     for (let x = 0; x < COLS; x++) {
       const p = board[y][x];
-      if (!p) str += ". ";
-      else {
-        // R=Red (Enemy, Bottom), B=Black (Self, Top)
+      if (!p) {
+         str += " . |"; 
+      } else {
         const c = p.color === Color.RED ? 'R' : 'B'; 
-        // K=King/General, A=Advisor, E=Elephant, H=Horse, R=Rook/Chariot, C=Cannon, P=Pawn
         let t = '';
         switch(p.type) {
-            case PieceType.GENERAL: t='K'; break;
+            case PieceType.GENERAL: t='K'; break; // King
             case PieceType.ADVISOR: t='A'; break;
             case PieceType.ELEPHANT: t='E'; break;
             case PieceType.HORSE: t='H'; break;
-            case PieceType.CHARIOT: t='R'; break;
+            case PieceType.CHARIOT: t='R'; break; // Rook
             case PieceType.CANNON: t='C'; break;
-            case PieceType.SOLDIER: t='P'; break;
+            case PieceType.SOLDIER: t='P'; break; // Pawn
         }
-        str += `${c}${t}`;
+        str += ` ${c}${t}|`;
       }
     }
-    str += ` | ${y}`;
+    str += `  ${y}`;
+    if (y === 4) {
+        str += "\n   |~~~~~~~~~~~~~ RIVER ~~~~~~~~~~~~~~~|";
+    }
     str += "\n";
   }
-  str +=    "   -------------------\n";
-  str += "    0 1 2 3 4 5 6 7 8 (X-Axis)\n";
+  str +=    "   +---+---+---+---+---+---+---+---+---+\n";
+  str += "     0   1   2   3   4   5   6   7   8   (X)\n";
   return str;
 };
 
@@ -78,15 +106,15 @@ const callBackendAI = async (endpoint: string, prompt: string, allMoves: { move:
         });
 
         if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || "API failed");
+            throw new Error(`API Error: ${res.status}`);
         }
         
         const data = await res.json();
         let text = data.text || "";
-        // 清理 markdown
+        // 清理可能存在的 Markdown 代码块标记
         text = text.replace(/```json/g, '').replace(/```/g, '').trim();
         
+        // 尝试提取 JSON
         const jsonStart = text.indexOf('{');
         const jsonEnd = text.lastIndexOf('}');
         if (jsonStart !== -1 && jsonEnd !== -1) {
@@ -97,46 +125,53 @@ const callBackendAI = async (endpoint: string, prompt: string, allMoves: { move:
         const index = json.bestMoveIndex;
 
         if (typeof index === 'number' && index >= 0 && index < allMoves.length) {
-            console.log(`Gemini Reasoning:`, json.reasoning);
+            console.log(`Gemini Thinking:\n${json.reasoning}`);
             return allMoves[index].move;
+        } else {
+            console.warn("AI returned invalid index:", index);
         }
     } catch (e) {
-        console.warn(`AI 接口调用失败:`, e);
+        console.warn(`AI request failed:`, e);
     }
     return null;
 };
 
 export const getGeminiMove = async (board: BoardState): Promise<Move | null> => {
-  const allMoves: { move: Move, notation: string, value: number }[] = [];
+  const allMoves: { move: Move, notation: string, score: number, desc: string }[] = [];
   
-  // 简单的价值估算，帮助 AI 识别吃子价值
-  const pieceValues: Record<string, number> = {
-      [PieceType.GENERAL]: 1000,
-      [PieceType.CHARIOT]: 9,
-      [PieceType.CANNON]: 4.5,
-      [PieceType.HORSE]: 4,
-      [PieceType.ELEPHANT]: 2,
-      [PieceType.ADVISOR]: 2,
-      [PieceType.SOLDIER]: 1
-  };
-
+  // 1. 生成所有合法走法
   for (let y = 0; y < ROWS; y++) {
     for (let x = 0; x < COLS; x++) {
       const p = board[y][x];
+      // AI 执黑 (Black)
       if (p && p.color === Color.BLACK) {
         const validDests = getValidMoves(board, { x, y });
         validDests.forEach(to => {
           const target = board[to.y][to.x];
-          let notation = `${p.type.toUpperCase()} (${x},${y}) -> (${to.x},${to.y})`;
-          let val = 0;
+          
+          // 基础评分：吃子加分
+          let moveScore = 0;
+          let desc = "move";
+          
           if (target) {
-              val = pieceValues[target.type] || 0;
-              notation += ` [CAPTURES ${target.type.toUpperCase()} Val=${val}]`;
+              const val = PIECE_VALUES[target.type] || 0;
+              moveScore += val * 10; // 这里的评分仅用于 Prompt 里的列表排序，帮助 AI 聚焦
+              desc = `CAPTURE ${target.color}${target.type} (Val:${val})`;
           }
+
+          // 位置微调：鼓励占中、过河
+          if (to.x >= 3 && to.x <= 5) moveScore += 5; // 控制中路
+          if (to.y > 4) moveScore += 10; // 过河
+
+          // 生成人类可读的记谱描述 (简化版)
+          const pieceName = p.type.toUpperCase();
+          const notation = `${pieceName} (${x},${y}) -> (${to.x},${to.y})`;
+
           allMoves.push({
             move: { from: { x, y }, to },
-            notation: `Index ${allMoves.length}: ${notation}`,
-            value: val
+            notation: notation,
+            desc: desc,
+            score: moveScore
           });
         });
       }
@@ -145,54 +180,67 @@ export const getGeminiMove = async (board: BoardState): Promise<Move | null> => 
 
   if (allMoves.length === 0) return null;
 
-  // 强化版 Prompt
+  // 2. 预排序：将吃子和高价值的移动排在前面，便于 AI 优先评估
+  allMoves.sort((a, b) => b.score - a.score);
+
+  // 3. 计算兵力对比
+  const redMaterial = calculateMaterial(board, Color.RED);
+  const blackMaterial = calculateMaterial(board, Color.BLACK);
+  const materialDiff = blackMaterial - redMaterial;
+  
+  let situationText = "Equal";
+  if (materialDiff > 200) situationText = "Black is Leading (Advantage)";
+  if (materialDiff < -200) situationText = "Black is Losing (Disadvantage)";
+
+  // 4. 构建超级详细的 Prompt
+  const movesText = allMoves.map((m, i) => 
+    `Index ${i}: ${m.notation} [${m.desc}]`
+  ).join('\n');
+
   const prompt = `
-    Role: You are an Elite Xiangqi (Chinese Chess) Engine playing BLACK.
-    Red (Opponent) is at the bottom (Rows 5-9). Black (You) is at the top (Rows 0-4).
-
-    **Current Board (FEN):** ${boardToFen(board)}
+    You are XQZero, a Grandmaster level Xiangqi (Chinese Chess) AI Engine.
     
-    **Visual Map:**
+    [GAME CONTEXT]
+    You are playing BLACK (Top side, Rows 0-4).
+    Opponent is RED (Bottom side, Rows 5-9).
+    Current Situation: ${situationText} (Material: Black ${blackMaterial} vs Red ${redMaterial})
+
+    [VISUAL BOARD]
+    (RK=Red King, BK=Black King, RR=Red Rook/Chariot, etc.)
     ${boardToVisual(board)}
-    (RK=Red King, BK=Black King, RR=Red Rook, BR=Black Rook, etc.)
 
-    **Candidate Moves for Black:**
-    ${allMoves.map(m => m.notation).join('\n')}
+    [FEN STRING]
+    ${boardToFen(board)}
 
-    **Critical Thinking Process:**
-    1. **Safety Check:** Is the Black General (BK) in Check? Can it be killed? If so, you MUST save it.
-    2. **Tactical Blunders:** Do NOT move a piece to a square where it will be captured for free, unless it's a sacrifice for Checkmate.
-    3. **Attack:** Look for Checkmate opportunities.
-    4. **Material:** 
-       - Chariot/Rook (Value 9) is the strongest. Don't lose it!
-       - Cannon (4.5) & Horse (4) are key attackers.
-       - Do not trade a Chariot for a Soldier.
-    5. **Evaluation:** Select the move index that maximizes Black's advantage.
+    [CANDIDATE MOVES FOR BLACK]
+    (Sorted by approximate heuristic value)
+    ${movesText}
 
-    Output STRICT JSON:
+    [THINKING PROCESS REQUIREMENTS]
+    1. **Safety First**: Is the Black General (BK) currently under attack or exposed? You MUST defend the King.
+    2. **Tactical Checks**:
+       - Can you Checkmate Red immediately?
+       - Can you capture a high-value piece (Rook/Chariot > Cannon/Horse) for free?
+       - Are any of your high-value pieces under threat? Move them to safety.
+    3. **Strategy**:
+       - Control the "River" and the Center lines (columns 3, 4, 5).
+       - Do not trade a Chariot (900) for a Soldier (100) or Horse (400) unless it leads to mate.
+       - If you are winning, trade pieces to simplify. If losing, complicate the position.
+
+    [OUTPUT FORMAT]
+    Return ONLY valid JSON.
     {
-      "reasoning": "Step-by-step analysis of threats and best response...",
-      "bestMoveIndex": <integer_from_candidate_list>
+      "reasoning": "Briefly explain the tactical evaluation, threats identified, and why the move was chosen.",
+      "bestMoveIndex": <The integer index from the Candidate Moves list>
     }
   `;
 
+  // 5. 调用后端 (gemini-3-pro-preview + High Thinking Budget)
   const move = await callBackendAI('/api/gemini', prompt, allMoves);
+  
   if (move) return move;
 
-  // 改进的启发式兜底：优先吃高价值子，其次靠近中路
-  let best = allMoves[0].move;
-  let maxScore = -100;
-  
-  allMoves.forEach(m => {
-    let score = m.value * 10; // 吃子价值权重最高
-    // 简单的位置加分：过河卒、中路炮/车
-    if (m.move.to.y > 4) score += 1; // 进攻红方半场
-    if (m.move.to.x >= 3 && m.move.to.x <= 5) score += 0.5; // 控制中路
-    
-    if (score > maxScore) {
-      maxScore = score;
-      best = m.move;
-    }
-  });
-  return best;
+  // 6. 兜底逻辑 (如果 AI 挂了)
+  // 贪婪算法：吃最有价值的子，或者随机走一步合法的
+  return allMoves[0].move; 
 };
