@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { User } from '../types.ts';
+import { calculatePlayerLevel } from '../utils/gameLogic.ts';
 
 interface Props {
   isOpen: boolean;
@@ -14,7 +15,7 @@ type RestrictionMode = 'any' | 'ranked';
 export const PvPSetupModal: React.FC<Props> = ({ isOpen, onClose, user, botAppUrl }) => {
   const [step, setStep] = useState<'config' | 'invite'>('config');
   const [restriction, setRestriction] = useState<RestrictionMode>('any');
-  const [minLevel, setMinLevel] = useState<number>(user ? Math.floor((user.points || 0) / 1000) : 0);
+  const [minLevel, setMinLevel] = useState<number>(user ? calculatePlayerLevel(user.points || 0) : 0);
   
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [isCreatingGame, setIsCreatingGame] = useState(false);
@@ -136,7 +137,7 @@ export const PvPSetupModal: React.FC<Props> = ({ isOpen, onClose, user, botAppUr
                                 <input 
                                     type="range" 
                                     min="0" 
-                                    max="10" 
+                                    max="50" 
                                     step="1"
                                     value={minLevel}
                                     onChange={(e) => setMinLevel(parseInt(e.target.value))}

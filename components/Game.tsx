@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Board } from './Board.tsx';
 import { BoardState, Color, Move, PieceType, Position } from '../types.ts';
 import { INITIAL_BOARD } from '../constants.ts';
-import { getValidMoves } from '../utils/gameLogic.ts';
+import { getValidMoves, calculatePlayerLevel } from '../utils/gameLogic.ts';
 import { getGeminiMove } from '../services/geminiService.ts';
 
 interface Props {
@@ -106,7 +106,9 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
              try {
                 const userRes = await fetch(`/api/user?telegram_id=${telegram_id}&username=${username}`);
                 const userData = await userRes.json();
-                const userLevel = userData.points ? Math.floor(userData.points / 1000) : 0;
+                
+                // 使用新的等级计算逻辑
+                const userLevel = calculatePlayerLevel(userData.points || 0);
 
                 const joinRes = await fetch('/api/join_game', {
                     method: 'POST',
@@ -310,7 +312,8 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
         </button>
         <div className="flex flex-col items-center">
              <h1 className="text-lg font-bold tracking-wider">中国象棋</h1>
-             <span className="text-[10px] opacity-80">Gemini 3 Pro AI (Lv.9)</span>
+             {/* 900 分 = Lv.9 */}
+             <span className="text-[10px] opacity-80">Gemini 3 Pro (Lv.9)</span>
         </div>
         <div className="w-10"></div>
       </header>

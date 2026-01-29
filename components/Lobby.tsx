@@ -4,6 +4,7 @@ import { User } from '../types.ts';
 import { DEFAULT_TELEGRAM_GROUP_URL, DEFAULT_TELEGRAM_BOT_APP_URL } from '../constants.ts';
 import { PaymentModal } from './PaymentModal.tsx';
 import { PvPSetupModal } from './PvPSetupModal.tsx';
+import { calculatePlayerLevel } from '../utils/gameLogic.ts';
 
 interface Props {
   onStartGame: (mode: 'pve' | 'pvp') => void;
@@ -129,7 +130,7 @@ export const Lobby: React.FC<Props> = ({ onStartGame }) => {
 
         <div className="flex flex-col items-center">
             <div className="bg-[#8B0000] text-white text-[10px] px-3 py-1 rounded-t-lg border-x border-t border-[#d4b483] font-bold shadow-md">
-                {user?.id === 0 ? '访客模式' : `Lv.${Math.floor((user?.points||0)/1000)} 棋士`}
+                {user?.id === 0 ? '访客模式' : `Lv.${calculatePlayerLevel(user?.points || 0)} 棋士`}
             </div>
             <div className="flex items-center bg-[#5c4033] rounded-full p-1 pr-1 gap-2 border-2 border-[#8B0000] shadow-lg">
                 <div className="flex items-center space-x-1 px-3">

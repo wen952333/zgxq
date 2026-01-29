@@ -1,4 +1,14 @@
+
 import { BoardState, Color, PieceType, Position, ROWS, COLS } from '../types.ts';
+
+// ================= 等级计算核心逻辑 =================
+// 调整为 100 积分升 1 级，让晋升更有反馈感
+// 300分(初始) -> Lv.3
+// 1000分 -> Lv.10
+export const calculatePlayerLevel = (points: number): number => {
+  return Math.floor(Math.max(0, points) / 100);
+};
+// =================================================
 
 const isWithinBounds = (x: number, y: number) => x >= 0 && x < COLS && y >= 0 && y < ROWS;
 
