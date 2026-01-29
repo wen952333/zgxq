@@ -3,8 +3,9 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Board } from './Board.tsx';
 import { BoardState, Color, Move, PieceType, Position } from '../types.ts';
 import { INITIAL_BOARD } from '../constants.ts';
-import { getValidMoves, calculatePlayerLevel } from '../utils/gameLogic.ts';
+import { getValidMoves, calculatePlayerLevel, hasLegalMoves, evaluateMaterial, boardToFen } from '../utils/gameLogic.ts';
 import { getGeminiMove } from '../services/geminiService.ts';
+import { getTopMoves } from '../utils/engine.ts';
 
 interface Props {
   mode: 'pve' | 'pvp';
@@ -12,7 +13,14 @@ interface Props {
   invitedGameId?: string | null;
 }
 
-const TURN_TIME_LIMIT = 120; // 120 Seconds per turn
+interface Suggestion {
+  move: Move;
+  score: number;
+  desc: string;
+  notation: string;
+}
+
+const TURN_TIME_LIMIT = 120;
 
 export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const [board, setBoard] = useState<BoardState>(INITIAL_BOARD);
@@ -21,21 +29,25 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const [validMoves, setValidMoves] = useState<Position[]>([]);
   const [winner, setWinner] = useState<Color | 'Draw' | null>(null);
   const [isAiThinking, setIsAiThinking] = useState(false);
-  const [moveHistory, setMoveHistory] = useState<string[]>([]);
+  
+  // 新增：AI 建议状态
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [isSuggesting, setIsSuggesting] = useState(false);
+  
   const [resultMessage, setResultMessage] = useState<string>("");
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
   
-  // Game Logic State
   const [timeLeft, setTimeLeft] = useState(TURN_TIME_LIMIT);
-  const [historyStack, setHistoryStack] = useState<BoardState[]>([]); // For Undo
-  const [noCaptureSteps, setNoCaptureSteps] = useState(0); // 60 moves rule
+  const [historyStack, setHistoryStack] = useState<BoardState[]>([]);
+  const [fenHistory, setFenHistory] = useState<string[]>([]);
+  const [noCaptureSteps, setNoCaptureSteps] = useState(0);
 
   const hasDeducted = useRef(false);
 
-  // Timer Effect
+  // Timer
   useEffect(() => {
-    if (winner || isInitializing || (mode === 'pve' && turn === Color.BLACK && isAiThinking)) return; // Pause timer when AI thinks (it takes time)
+    if (winner || isInitializing || (mode === 'pve' && turn === Color.BLACK && isAiThinking)) return;
 
     const timer = setInterval(() => {
         setTimeLeft((prev) => {
@@ -51,7 +63,25 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     return () => clearInterval(timer);
   }, [turn, winner, isInitializing, mode, isAiThinking]);
 
-  // Initial Logic: Deduct Points or Join Game
+  // AI 军师建议 (当轮到红方时)
+  useEffect(() => {
+    if (turn === Color.RED && !winner && !isInitializing) {
+        setIsSuggesting(true);
+        // 使用 setTimeout 让出主线程，避免渲染阻塞
+        const timer = setTimeout(() => {
+            // 在 PVE 或 PVP 中都可以给红方建议
+            const hints = getTopMoves(board, Color.RED, 3);
+            setSuggestions(hints);
+            setIsSuggesting(false);
+        }, 500); // 稍微延迟一点，让 UI 先渲染出来
+        return () => clearTimeout(timer);
+    } else {
+        setSuggestions([]);
+        setIsSuggesting(false);
+    }
+  }, [turn, board, winner, isInitializing]);
+
+  // Init Game
   useEffect(() => {
     // @ts-ignore
     const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
@@ -69,23 +99,15 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ telegram_id, amount: 30 })
                 });
-                
-                // If API fails (e.g. 404/500), we act as if it's offline mode/guest mode
-                // We do NOT block the game start
-                const data = res.ok ? await res.json() : { success: false, error: "Network Error" };
-                
+                const data = res.ok ? await res.json() : { success: false };
                 if (data.success) {
                     setStatusMessage(`对局开始 (当前积分: ${data.points})`);
                 } else {
-                    console.warn("Deduction failed, proceeding anyway (Guest/Offline mode)");
-                    setStatusMessage("对局开始 (离线模式/免扣分)");
+                    setStatusMessage("对局开始 (离线/免扣分)");
                 }
-                
                 setIsInitializing(false);
                 setHistoryStack([INITIAL_BOARD.map(row => row.map(p => p ? {...p} : null))]);
-
             } catch (e) {
-                console.warn("Network failed, proceeding offline");
                 setStatusMessage("对局开始 (离线模式)");
                 setIsInitializing(false);
                 setHistoryStack([INITIAL_BOARD.map(row => row.map(p => p ? {...p} : null))]);
@@ -100,14 +122,11 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
          hasDeducted.current = true; 
          setIsInitializing(true);
          setStatusMessage("正在加入房间...");
-         
          const joinGame = async () => {
              const username = tgUser?.username || "DevJoiner";
              try {
                 const userRes = await fetch(`/api/user?telegram_id=${telegram_id}&username=${username}`);
                 const userData = await userRes.json();
-                
-                // 使用新的等级计算逻辑
                 const userLevel = calculatePlayerLevel(userData.points || 0);
 
                 const joinRes = await fetch('/api/join_game', {
@@ -115,7 +134,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ telegram_id, game_id: invitedGameId, user_level: userLevel })
                 });
-                
                 const joinData = await joinRes.json();
                 if (joinData.success) {
                     setStatusMessage(joinData.message || "对局开始！");
@@ -125,7 +143,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                     onBack();
                 }
              } catch (e) {
-                 console.error(e);
                  setStatusMessage("连接失败");
                  onBack();
              }
@@ -133,10 +150,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
          joinGame();
     }
   }, [mode, invitedGameId, onBack]);
-
-  const playSound = (type: 'move' | 'capture') => {
-    // Placeholder for sound
-  };
 
   const handleGameEnd = async (winnerColor: Color | 'Draw', reason: string = "") => {
     setWinner(winnerColor);
@@ -158,14 +171,8 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                 body: JSON.stringify({ telegram_id, result })
             });
             const data = await res.json();
-            if (data.success) {
-                setResultMessage(`${reason} ${data.message}`);
-            }
-        } catch (e) {
-            console.error("Points update failed, offline mode");
-        }
-    } else {
-        setResultMessage(reason);
+            if (data.success) setResultMessage(`${reason} ${data.message}`);
+        } catch (e) {}
     }
   };
 
@@ -185,7 +192,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
         setSelectedPos(pos);
         const moves = getValidMoves(board, pos);
         setValidMoves(moves);
-        return;
     }
   };
 
@@ -210,24 +216,29 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     setValidMoves([]);
     setTimeLeft(TURN_TIME_LIMIT); 
     
-    if (targetPiece) {
-        setNoCaptureSteps(0);
-    } else {
-        setNoCaptureSteps(prev => prev + 1);
-    }
-
-    const pieceName = sourcePiece.type.toUpperCase().slice(0, 2);
-    setMoveHistory(prev => [...prev, `${sourcePiece.color === Color.RED ? '🔴' : '⚫'} ${pieceName}: (${move.from.x},${move.from.y})→(${move.to.x},${move.to.y})`]);
-    playSound(targetPiece ? 'capture' : 'move');
+    const nextTurn = turn === Color.RED ? Color.BLACK : Color.RED;
+    const currentFen = boardToFen(newBoard, nextTurn);
+    setFenHistory(prev => {
+        const newFenHistory = [...prev, currentFen];
+        const occurrences = newFenHistory.filter(f => f === currentFen).length;
+        if (occurrences >= 3) {
+            setTimeout(() => handleGameEnd('Draw', "三次重复局面，自动和棋"), 500);
+        }
+        return newFenHistory;
+    });
 
     if (targetPiece && targetPiece.type === PieceType.GENERAL) {
       handleGameEnd(sourcePiece.color, "将死！");
-    } else if (noCaptureSteps >= 120) {
-      handleGameEnd('Draw', "60回合无吃子，自动和棋");
-    } else {
-      setTurn(prev => prev === Color.RED ? Color.BLACK : Color.RED);
+      return;
     }
-  }, [board, noCaptureSteps]);
+
+    if (!hasLegalMoves(newBoard, nextTurn)) {
+         setTimeout(() => handleGameEnd(sourcePiece.color, "对方无棋可走 (困毙)，胜利！"), 500);
+         return;
+    }
+
+    setTurn(nextTurn);
+  }, [board, turn, fenHistory]);
 
   const handleUndo = () => {
     if (mode !== 'pve' || turn !== Color.RED || winner) return;
@@ -238,11 +249,13 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     const prevBoard = historyStack[historyStack.length - 2];
     setBoard(prevBoard);
     setHistoryStack(prev => prev.slice(0, prev.length - 2));
-    setMoveHistory(prev => prev.slice(0, prev.length - 2));
+    setFenHistory(prev => prev.slice(0, prev.length - 2));
     setTurn(Color.RED);
     setWinner(null);
-    setNoCaptureSteps(prev => Math.max(0, prev - 2));
     setTimeLeft(TURN_TIME_LIMIT);
+    // 重置 AI 建议
+    setSuggestions([]);
+    setIsSuggesting(true);
   };
 
   const handleSurrender = () => {
@@ -255,13 +268,21 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   const handleDraw = () => {
       if (winner) return;
       if (mode === 'pve') {
-          if (noCaptureSteps > 60) {
-              handleGameEnd('Draw', "局势僵持，同意和棋");
+          const redScore = evaluateMaterial(board, Color.RED);
+          const blackScore = evaluateMaterial(board, Color.BLACK); 
+          const aiAdvantage = blackScore - redScore;
+          
+          if (aiAdvantage > 300) {
+              alert(`Gemini: "我现在兵力优势明显 (+${aiAdvantage})，拒绝和棋！"`);
+          } else if (aiAdvantage < -100) {
+              handleGameEnd('Draw', "Gemini: " + "局面不利，同意和棋。");
+          } else if (historyStack.length > 30 && Math.abs(aiAdvantage) < 200) {
+              handleGameEnd('Draw', "Gemini: " + "势均力敌，同意和棋。");
           } else {
-              alert("Gemini: 只有在 30 回合(60步)无吃子后才能申请和棋。");
+              alert(`Gemini: "战斗才刚刚开始，暂时不想和棋。"`);
           }
       } else {
-          alert("对方拒绝了您的求和请求。");
+          alert("对方拒绝了您的求和请求。(PVP尚未实装协商逻辑)");
       }
   };
 
@@ -270,8 +291,8 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     if (mode === 'pve' && turn === Color.BLACK && !winner && !isInitializing) {
       const makeAiMove = async () => {
         setIsAiThinking(true);
-        // Short delay for UI update
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // 让 UI 线程喘口气
+        await new Promise(resolve => setTimeout(resolve, 300));
         
         try {
           const move = await getGeminiMove(board);
@@ -291,6 +312,12 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
     }
   }, [turn, winner, board, executeMove, mode, isInitializing]);
 
+  const handleSuggestionClick = (move: Move) => {
+      setSelectedPos(move.from);
+      setValidMoves(getValidMoves(board, move.from));
+      // Optional: visualize hint better
+  };
+
   if (isInitializing) {
       return (
           <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[#f0dbb0] text-[#5c4033] font-sans wood-texture z-50">
@@ -301,7 +328,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col items-center bg-[#f0dbb0] text-[#4a3b2a] font-sans pb-10 wood-texture">
+    <div className="min-h-screen flex flex-col items-center bg-[#f0dbb0] text-[#4a3b2a] font-sans pb-4 wood-texture">
       {/* Header */}
       <header className="w-full p-3 flex justify-between items-center bg-[#5c4033] text-[#f0dbb0] shadow-md z-30">
         <button onClick={onBack} className="flex items-center space-x-1 hover:text-[#d4b483]">
@@ -312,7 +339,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
         </button>
         <div className="flex flex-col items-center">
              <h1 className="text-lg font-bold tracking-wider">中国象棋</h1>
-             {/* 900 分 = Lv.9 */}
              <span className="text-[10px] opacity-80">Gemini 3 Pro (Lv.9)</span>
         </div>
         <div className="w-10"></div>
@@ -320,12 +346,6 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
 
       {/* Game Status & Timer */}
       <div className="w-full max-w-[500px] p-4 flex flex-col items-center z-10">
-        {statusMessage && (
-            <div className="bg-[#8B0000] text-white px-4 py-1 rounded-full text-xs font-bold mb-2 shadow animate-pulse">
-                {statusMessage}
-            </div>
-        )}
-
         <div className="w-full flex justify-between items-center bg-[#ebd4a9] p-2 rounded-lg border border-[#d4b483] shadow-inner">
             {/* Player (Red) */}
             <div className={`flex flex-col items-center transition-all ${turn === Color.RED ? 'scale-105' : 'opacity-70'}`}>
@@ -334,7 +354,7 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                     <span className="font-bold text-[#8B0000] text-sm">我方</span>
                 </div>
                 {turn === Color.RED && !winner && (
-                    <span className={`text-xs font-mono font-bold mt-1 ${timeLeft < 20 ? 'text-red-600 animate-pulse' : 'text-[#5c4033]'}`}>
+                    <span className={`text-xs font-mono font-bold mt-1 ${timeLeft < 10 ? 'text-red-600 animate-pulse font-extrabold scale-110' : 'text-[#5c4033]'}`}>
                         ⏳ {timeLeft}s
                     </span>
                 )}
@@ -351,12 +371,11 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                 {turn === Color.BLACK && !winner && (
                     <div className="flex flex-col items-center mt-1 min-h-[20px]">
                         {isAiThinking ? (
-                            <div className="flex flex-col items-center animate-pulse">
-                                <span className="text-[10px] font-extrabold text-[#8B0000] mb-1">🔥 深度思考中</span>
-                                <div className="flex space-x-1">
-                                    <div className="w-1.5 h-1.5 bg-black rounded-full animate-bounce"></div>
-                                    <div className="w-1.5 h-1.5 bg-black rounded-full animate-bounce delay-75"></div>
-                                    <div className="w-1.5 h-1.5 bg-black rounded-full animate-bounce delay-150"></div>
+                            <div className="flex items-center gap-1">
+                                <span className="text-[10px] font-bold text-[#8B0000] animate-pulse">思考中</span>
+                                <div className="flex space-x-0.5">
+                                    <div className="w-1 h-1 bg-black rounded-full animate-bounce"></div>
+                                    <div className="w-1 h-1 bg-black rounded-full animate-bounce delay-75"></div>
                                 </div>
                             </div>
                         ) : (
@@ -394,9 +413,9 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
                 onClick={() => {
                     setBoard(INITIAL_BOARD);
                     setHistoryStack([]);
+                    setFenHistory([]);
                     setTurn(Color.RED);
                     setWinner(null);
-                    setNoCaptureSteps(0);
                     setTimeLeft(TURN_TIME_LIMIT);
                 }}
                 className="w-full bg-[#8B0000] text-white py-3 rounded-lg font-bold text-lg hover:bg-red-900 transition shadow-lg"
@@ -456,19 +475,49 @@ export const Game: React.FC<Props> = ({ mode, onBack, invitedGameId }) => {
           </button>
       </div>
 
-      {/* Recent Moves Log */}
-      <div className="w-full max-w-[500px] mt-4 px-4 z-10 flex-1 min-h-[100px]">
-        <div className="h-full bg-white bg-opacity-60 rounded-lg border border-[#5c4033] p-2 text-xs font-mono scrollbar-hide shadow-inner flex flex-col relative">
-           <div className="absolute top-0 right-0 bg-[#5c4033] text-[#f0dbb0] text-[10px] px-1 rounded-bl">
-               {noCaptureSteps}/120 半步
+      {/* AI Assistant (Replacing Move History) */}
+      <div className="w-full max-w-[500px] mt-4 px-4 z-10 flex-1 min-h-[140px]">
+        <div className="h-full bg-white bg-opacity-70 rounded-xl border-2 border-[#5c4033]/30 p-3 shadow-lg flex flex-col relative overflow-hidden">
+           <div className="absolute top-0 left-0 bg-[#5c4033] text-[#f0dbb0] text-[10px] px-2 py-0.5 rounded-br-lg font-bold z-10 shadow-sm flex items-center gap-1">
+               <span>🧠 AI 军师</span>
+               {isSuggesting && <span className="animate-spin">⚙️</span>}
            </div>
-           <div className="overflow-y-auto flex-1">
-              {moveHistory.length === 0 ? (
-                <span className="text-gray-500 italic p-2 block text-center">对局开始... 红方先行</span>
+
+           <div className="mt-4 flex flex-col gap-2 overflow-y-auto flex-1 pb-1">
+              {turn === Color.BLACK ? (
+                  <div className="flex items-center justify-center h-full text-[#5c4033]/60 text-sm italic">
+                      等待对方走棋...
+                  </div>
+              ) : isSuggesting ? (
+                  <div className="flex flex-col items-center justify-center h-full space-y-2">
+                      <div className="w-5 h-5 border-2 border-[#8B0000] border-t-transparent rounded-full animate-spin"></div>
+                      <span className="text-xs text-[#5c4033]">军师正在推演局势...</span>
+                  </div>
+              ) : suggestions.length > 0 ? (
+                  suggestions.map((sug, idx) => (
+                      <div 
+                        key={idx} 
+                        onClick={() => handleSuggestionClick(sug.move)}
+                        className="flex items-center justify-between bg-[#f0dbb0]/50 hover:bg-[#d4b483]/50 p-2 rounded-lg border border-[#5c4033]/10 cursor-pointer transition-colors active:scale-[0.99]"
+                      >
+                          <div className="flex items-center gap-3">
+                              <span className={`font-bold font-mono text-sm px-1.5 py-0.5 rounded ${idx === 0 ? 'bg-[#8B0000] text-white' : 'bg-[#5c4033] text-white'}`}>
+                                  {idx + 1}
+                              </span>
+                              <div className="flex flex-col">
+                                  <span className="text-[#8B0000] font-bold text-sm">{sug.notation}</span>
+                                  <span className="text-[10px] text-[#5c4033]">{sug.desc}</span>
+                              </div>
+                          </div>
+                          <div className="flex text-[10px] text-[#5c4033] opacity-60">
+                              推荐度 {Array(3-idx).fill('★').join('')}
+                          </div>
+                      </div>
+                  ))
               ) : (
-                moveHistory.slice().reverse().map((move, idx) => (
-                  <div key={idx} className="mb-1 border-b border-[#d4b483] border-opacity-30 pb-1 last:border-0">{move}</div>
-                ))
+                  <div className="flex items-center justify-center h-full text-[#5c4033]/60 text-sm">
+                      暂无建议
+                  </div>
               )}
            </div>
         </div>
